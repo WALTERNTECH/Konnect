@@ -275,10 +275,12 @@ p {
 .mt-64 { margin-top: 64px; }
 
 .section {
-  padding: clamp(40px, 6vw, 80px) 0;
+  padding-top: clamp(40px, 6vw, 80px);
+  padding-bottom: clamp(40px, 6vw, 80px);
 }
 .section-tight {
-  padding: clamp(24px, 4vw, 48px) 0;
+  padding-top: clamp(24px, 4vw, 48px);
+  padding-bottom: clamp(24px, 4vw, 48px);
 }
 
 .rule {
