@@ -1,0 +1,15 @@
+{
+  "name": "konnect",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Konnect — stays, wellness and private introductions in Kenya",
+  "workspaces": ["backend", "frontend"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "npm run build -w frontend && npm run build -w backend",
+    "start": "npm start -w backend",
+    "test": "npm test -w backend",
+    "dev:backend": "npm run dev -w backend",
+    "dev:frontend": "npm run dev -w frontend"
+  }
+}

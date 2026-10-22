@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: konnect
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: MASTER_KEY
+        sync: false
+      - key: MPESA_CALLBACK_TOKEN
+        sync: false
+      - key: ADMIN_SETUP_TOKEN
+        sync: false
+      - key: MPESA_DRIVER
+        value: simulated
+      - key: SAMPLE_CONTENT
+        value: "on"

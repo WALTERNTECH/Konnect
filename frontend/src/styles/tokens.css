@@ -1,0 +1,126 @@
+/* Konnect design tokens. Laterite (Kenyan red earth) on warm paper and ink; brass marks membership. */
+
+:root {
+  --paper: #f6f4ef;
+  --surface: #ffffff;
+  --surface-2: #f0ede6;
+  --surface-3: #e7e2d8;
+  --ink: #17140f;
+  --ink-2: #4b463e;
+  --ink-3: #847d72;
+  --ink-4: #aea79b;
+  --line: rgba(23, 20, 15, 0.1);
+  --line-2: rgba(23, 20, 15, 0.17);
+  --accent: #a3472a;
+  --accent-hover: #8f3c22;
+  --accent-press: #7c331c;
+  --accent-ink: #fffaf6;
+  --accent-soft: rgba(163, 71, 42, 0.08);
+  --accent-line: rgba(163, 71, 42, 0.28);
+  --brass: #977443;
+  --brass-soft: rgba(151, 116, 67, 0.12);
+  --ok: #2c6a4c;
+  --ok-soft: rgba(44, 106, 76, 0.1);
+  --warn: #9a6512;
+  --warn-soft: rgba(154, 101, 18, 0.11);
+  --danger: #b0281f;
+  --danger-soft: rgba(176, 40, 31, 0.08);
+  --overlay: rgba(14, 12, 9, 0.48);
+  --shadow-1: 0 1px 2px rgba(23, 20, 15, 0.06), 0 1px 1px rgba(23, 20, 15, 0.03);
+  --shadow-2: 0 2px 6px rgba(23, 20, 15, 0.06), 0 12px 32px -12px rgba(23, 20, 15, 0.18);
+  --shadow-3: 0 24px 64px -24px rgba(23, 20, 15, 0.38), 0 2px 8px rgba(23, 20, 15, 0.06);
+  --grain-opacity: 0.045;
+  --img-veil: rgba(0, 0, 0, 0);
+
+  --serif: "Instrument Serif", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --r-xs: 6px;
+  --r-sm: 9px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 22px;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.1, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --t-fast: 140ms;
+  --t-med: 260ms;
+  --t-slow: 520ms;
+
+  --page-max: 1240px;
+  --gutter: clamp(16px, 4vw, 40px);
+  --topbar-h: 64px;
+  --bottomnav-h: 64px;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0e0d0b;
+    --surface: #161512;
+    --surface-2: #1d1b17;
+    --surface-3: #27241f;
+    --ink: #f2eee7;
+    --ink-2: #c3bbaf;
+    --ink-3: #8c8479;
+    --ink-4: #615a51;
+    --line: rgba(242, 238, 231, 0.09);
+    --line-2: rgba(242, 238, 231, 0.16);
+    --accent: #cc6845;
+    --accent-hover: #d87955;
+    --accent-press: #b95b3b;
+    --accent-ink: #1a0f0a;
+    --accent-soft: rgba(204, 104, 69, 0.12);
+    --accent-line: rgba(204, 104, 69, 0.36);
+    --brass: #c8a56b;
+    --brass-soft: rgba(200, 165, 107, 0.13);
+    --ok: #6fbf95;
+    --ok-soft: rgba(111, 191, 149, 0.12);
+    --warn: #e0a84a;
+    --warn-soft: rgba(224, 168, 74, 0.12);
+    --danger: #ef7a6f;
+    --danger-soft: rgba(239, 122, 111, 0.12);
+    --overlay: rgba(0, 0, 0, 0.62);
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-2: 0 2px 6px rgba(0, 0, 0, 0.35), 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+    --shadow-3: 0 24px 64px -24px rgba(0, 0, 0, 0.8), 0 2px 8px rgba(0, 0, 0, 0.4);
+    --grain-opacity: 0.06;
+    --img-veil: rgba(0, 0, 0, 0.08);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper: #0e0d0b;
+  --surface: #161512;
+  --surface-2: #1d1b17;
+  --surface-3: #27241f;
+  --ink: #f2eee7;
+  --ink-2: #c3bbaf;
+  --ink-3: #8c8479;
+  --ink-4: #615a51;
+  --line: rgba(242, 238, 231, 0.09);
+  --line-2: rgba(242, 238, 231, 0.16);
+  --accent: #cc6845;
+  --accent-hover: #d87955;
+  --accent-press: #b95b3b;
+  --accent-ink: #1a0f0a;
+  --accent-soft: rgba(204, 104, 69, 0.12);
+  --accent-line: rgba(204, 104, 69, 0.36);
+  --brass: #c8a56b;
+  --brass-soft: rgba(200, 165, 107, 0.13);
+  --ok: #6fbf95;
+  --ok-soft: rgba(111, 191, 149, 0.12);
+  --warn: #e0a84a;
+  --warn-soft: rgba(224, 168, 74, 0.12);
+  --danger: #ef7a6f;
+  --danger-soft: rgba(239, 122, 111, 0.12);
+  --overlay: rgba(0, 0, 0, 0.62);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 2px 6px rgba(0, 0, 0, 0.35), 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+  --shadow-3: 0 24px 64px -24px rgba(0, 0, 0, 0.8), 0 2px 8px rgba(0, 0, 0, 0.4);
+  --grain-opacity: 0.06;
+  --img-veil: rgba(0, 0, 0, 0.08);
+  color-scheme: dark;
+}
