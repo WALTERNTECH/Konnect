@@ -5,6 +5,7 @@ import { startJobs } from "./jobs.js";
 import { migrate } from "./migrate.js";
 import { seedSamples } from "./seed.js";
 import { initPayments } from "./services/payments.js";
+import { initPayouts } from "./services/payouts.js";
 
 async function main() {
   // Without DATABASE_URL (local development) an embedded Postgres keeps data in .local/pglite.
@@ -13,6 +14,7 @@ async function main() {
   await migrate(db, (m) => console.log(`[db] ${m}`));
   if (env.sampleContent) await seedSamples(db, (m) => console.log(`[seed] ${m}`));
   initPayments();
+  initPayouts();
   startJobs();
 
   const server = createApp().listen(env.port, () => {

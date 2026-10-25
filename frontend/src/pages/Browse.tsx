@@ -80,7 +80,7 @@ export default function Browse({ type }: { type: Kind }) {
       <div className="page">
         <PageHead eyebrow={type === "STAY" ? "Stays" : "Wellness"} title={type === "STAY" ? (where ? `Stays in ${where}` : "Stays") : where ? `Wellness in ${where}` : "Wellness"}>
           {type === "STAY"
-            ? "Short stays paid by M-Pesa. Prices are per night in shillings; a KES 200 booking fee is added at checkout."
+            ? "Short stays paid by M-Pesa. Prices are per night in shillings, and that's what you pay."
             : "Massage, physiotherapy, beauty and spa sessions at a studio or at home. Book a time and pay by M-Pesa."}
         </PageHead>
       </div>
@@ -109,6 +109,9 @@ export default function Browse({ type }: { type: Kind }) {
                 <Users />
                 <Stepper value={guests} onChange={(g) => set({ guests: g > 1 ? String(g) : null })} />
               </span>
+              <button className="chip" aria-pressed={params.get("availableNow") === "true"} onClick={() => set({ availableNow: params.get("availableNow") === "true" ? null : "true" })}>
+                Available now
+              </button>
             </>
           ) : (
             <>

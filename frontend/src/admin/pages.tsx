@@ -109,10 +109,10 @@ function usePrompt() {
 
 // ——— Overview ———
 
-const PURPOSE: Record<string, string> = { BOOKING: "Booking", SUBSCRIPTION: "Membership", AD_CAMPAIGN: "Ads", PROMOTION: "Featured" };
+const PURPOSE: Record<string, string> = { BOOKING: "Booking", SUBSCRIPTION: "Membership (old)", AD_CAMPAIGN: "Ads", PROMOTION: "Featured" };
 
 export function Overview() {
-  const { data } = useAdmin<{ revenue: Record<string, number>; counts: Record<string, number>; series: { day: string; signups: number; revenue: number; bookings: number }[]; neighbourhoods: Row[]; recent: Row[]; driver: string }>("/overview");
+  const { data } = useAdmin<{ revenue: Record<string, number>; counts: Record<string, number>; series: { day: string; signups: number; revenue: number; bookings: number }[]; neighbourhoods: Row[]; recent: Row[]; driver: string; payoutDriver: string | null }>("/overview");
   if (!data) return <Skeleton h={480} r={16} />;
   const { revenue: r, counts: c } = data;
   const queues: [string, number, string][] = [
@@ -120,25 +120,33 @@ export function Overview() {
     ["Verifications", c.q_verifications, "/admin/verification"],
     ["Open reports", c.q_reports, "/admin/reports"],
     ["Open SOS", c.q_sos, "/admin/safety"],
-    ["Payouts due", c.q_payouts, "/admin/payouts"],
+    ["Payouts to check", c.q_payouts, "/admin/payouts"],
     ["Refunds to send", c.q_refunds, "/admin/payments"],
     ["Ads to review", c.q_ads, "/admin/ads"],
   ];
   return (
     <>
-      <Head title="Overview">{data.driver === "simulated" && <span className="badge badge-warn">Payments are simulated · no money moves</span>}</Head>
+      <Head title="Overview">
+        {data.driver === "simulated" && <span className="badge badge-warn">Payments are simulated · no money moves</span>}
+        {data.driver !== "simulated" && !data.payoutDriver && <span className="badge badge-warn">B2C not set up · host payouts wait in Payouts</span>}
+      </Head>
       <div className="stack g-20">
         <div className="grid-stats">
           <div className="stat">
-            <span className="label">Revenue, 30 days</span>
-            <span className="value">{kes(r.month)}</span>
+            <span className="label">Konnect income, 30 days</span>
+            <span className="value">{kes(r.commission + r.ads + r.promotions)}</span>
             <span className="delta">
-              {kes(r.today)} today · {kes(r.week)} this week
+              {kes(r.commission)} commission · {kes(r.ads + r.promotions)} ads and featuring
             </span>
           </div>
           <div className="stat">
-            <span className="label">Members</span>
-            <span className="value">{num(c.members)}</span>
+            <span className="label">Paid in by M-Pesa, 30 days</span>
+            <span className="value">{kes(r.month)}</span>
+            <span className="delta">{kes(r.paidOut)} sent to hosts</span>
+          </div>
+          <div className="stat">
+            <span className="label">Hosts</span>
+            <span className="value">{num(c.hosts)}</span>
             <span className="delta">of {num(c.users)} accounts</span>
           </div>
           <div className="stat">
@@ -169,7 +177,7 @@ export function Overview() {
             <div className="row between">
               <h2 className="h-2">Revenue by day</h2>
               <span className="small muted">
-                Membership {kes(r.subscriptions)} · Fees {kes(r.bookingFees)} · Ads {kes(r.ads)} · Featured {kes(r.promotions)}
+                Bookings {kes(r.bookingVolume)} · Commission {kes(r.commission)} · Ads {kes(r.ads)} · Featured {kes(r.promotions)}
               </span>
             </div>
             <AreaChart data={data.series.map((d) => ({ label: d.day.slice(5), value: d.revenue }))} format={(n) => kes(n)} />
@@ -277,7 +285,6 @@ export function Users() {
           )],
           ["Age", (r) => r.age, "r"],
           ["Verified", badges],
-          ["Plan", (r) => (r.premium_until ? <span className="badge badge-brass">Member</span> : <span className="muted small">Free</span>)],
           ["Status", (r) => <span className={`badge ${r.status === "active" ? "badge-ok" : r.status === "suspended" ? "badge-danger" : ""}`}>{r.status}</span>],
           ["Joined", (r) => <span className="small muted">{fmtDate(r.created_at)}</span>],
         ]}
@@ -288,13 +295,12 @@ export function Users() {
 }
 
 function UserDrawer({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged: () => void }) {
-  const { data, reload } = useAdmin<{ user: Row; bookings: Row[]; payments: Row[]; reports: Row[]; verifications: Row[]; listings: Row[]; subscriptions: Row[] }>(`/users/${id}`);
+  const { data, reload } = useAdmin<{ user: Row; bookings: Row[]; payments: Row[]; reports: Row[]; verifications: Row[]; listings: Row[]; payouts: Row[] }>(`/users/${id}`);
   const run = useDo(async () => {
     await reload();
     onChanged();
   });
   const { ask, modal } = usePrompt();
-  const [days, setDays] = useState("30");
   const act = (body: Row, ok: string) => run(() => adminApi.post(`/users/${id}/action`, body), ok);
   const u = data?.user;
   return (
@@ -339,18 +345,6 @@ function UserDrawer({ id, onClose, onChanged }: { id: string; onClose: () => voi
                 Confirm phone
               </Button>
             )}
-            <span className="row g-6">
-              <select className="select" style={{ height: 36, width: 100 }} value={days} onChange={(e) => setDays(e.target.value)}>
-                {["7", "30", "90", "365"].map((d) => (
-                  <option key={d} value={d}>
-                    {d} days
-                  </option>
-                ))}
-              </select>
-              <Button size="sm" onClick={() => act({ action: "grant_premium", days: Number(days) }, "Membership added")}>
-                Add membership
-              </Button>
-            </span>
             {(["id", "income", "background"] as const).map(
               (b) =>
                 u[{ id: "id_verified_at", income: "income_verified_at", background: "background_checked_at" }[b]] && (
@@ -366,7 +360,7 @@ function UserDrawer({ id, onClose, onChanged }: { id: string; onClose: () => voi
           <div className="form-grid">
             <MiniList title="Bookings" rows={data.bookings} render={(b) => `${b.ref} · ${b.title} · ${b.status.toLowerCase()} · ${kes(b.total_kes)}`} />
             <MiniList title="Payments" rows={data.payments} render={(p) => `${PURPOSE[p.purpose]} · ${kes(p.amount_kes)} · ${p.status.toLowerCase()}${p.mpesa_receipt ? ` · ${p.mpesa_receipt}` : ""}`} />
-            <MiniList title="Membership" rows={data.subscriptions} render={(s) => `${s.period} · ${s.source} · until ${fmtDate(s.expires_at)}`} />
+            <MiniList title="Payouts to them" rows={data.payouts} render={(p) => `${p.ref} · ${kes(p.amount_kes)} · ${p.status.toLowerCase()}${p.reference ? ` · ${p.reference}` : ""}`} />
             <MiniList title="Listings" rows={data.listings} render={(l) => `${l.title} · ${l.status.toLowerCase()}`} />
             <MiniList title="Reports about them" rows={data.reports} render={(r) => `${r.reason} · ${r.status.toLowerCase()} · from ${r.reporter}`} />
             <MiniList title="Verification" rows={data.verifications} render={(v) => `${v.kind} · ${v.status.toLowerCase()} · ${fmtDate(v.created_at)}`} />
@@ -641,22 +635,25 @@ export function Payments() {
 // ——— Payouts ———
 
 export function Payouts() {
-  const [status, setStatus] = useState<"DUE" | "SCHEDULED" | "HELD" | "PAID" | "ALL">("DUE");
-  const { data, reload } = useAdmin<{ items: Row[] }>(`/payouts?status=${status}`);
+  const [status, setStatus] = useState<"ATTENTION" | "SENDING" | "HELD" | "PAID" | "ALL">("ATTENTION");
+  const { data, reload } = useAdmin<{ items: Row[]; driver: string | null }>(`/payouts?status=${status}`);
   const run = useDo(reload);
   const { ask, modal } = usePrompt();
+  const LABEL: Record<string, string> = { QUEUED: "waiting", SENDING: "sending", PAID: "sent", FAILED: "failed", HELD: "held" };
   return (
     <>
       <Head title="Payouts" />
       <p className="small muted" style={{ marginTop: -10, marginBottom: 14 }}>
-        Send each payout from the Konnect M-Pesa account to the host's number, then record the M-Pesa reference here.
+        {data?.driver
+          ? "Each host's 85% is sent by M-Pesa B2C the moment the guest's payment clears. Anything that failed or couldn't be sent waits here."
+          : "M-Pesa B2C isn't set up, so payouts wait here. Send each one from the Konnect M-Pesa account to the host's number and record the reference."}
       </p>
-      <Tabs value={status} onChange={setStatus} options={[["DUE", "Due now"], ["SCHEDULED", "Scheduled"], ["HELD", "Held"], ["PAID", "Paid"], ["ALL", "All"]]} />
+      <Tabs value={status} onChange={setStatus} options={[["ATTENTION", "Needs attention"], ["SENDING", "Sending"], ["HELD", "Held"], ["PAID", "Sent"], ["ALL", "All"]]} />
       <Table
         rows={data?.items}
-        empty="No payouts here"
+        empty="Nothing here"
         cols={[
-          ["Due", (r) => <span className="small">{fmtDateTime(r.due_at)}</span>],
+          ["Created", (r) => <span className="small">{fmtDateTime(r.created_at)}</span>],
           ["Host", (r) => (
             <span className="small">
               {r.host_name}
@@ -667,19 +664,37 @@ export function Payouts() {
           ["Booking", (r) => (
             <span className="small">
               {r.booking_ref} · {r.title}
+              {r.gross_kes ? (
+                <>
+                  <br />
+                  <span className="muted">
+                    {kes(r.gross_kes)} paid · {kes(r.commission_kes)} commission
+                  </span>
+                </>
+              ) : null}
             </span>
           )],
-          ["Amount", (r) => <span className="strong">{kes(r.amount_kes)}</span>, "r"],
-          ["Status", (r) => <span className={`badge ${r.status === "PAID" ? "badge-ok" : r.status === "HELD" ? "badge-danger" : "badge-warn"}`}>{r.status.toLowerCase()}</span>],
+          ["To host", (r) => <span className="strong">{kes(r.amount_kes)}</span>, "r"],
+          ["Status", (r) => (
+            <span className="stack g-4">
+              <span className={`badge ${r.status === "PAID" ? "badge-ok" : r.status === "HELD" || r.status === "FAILED" ? "badge-danger" : "badge-warn"}`}>{LABEL[r.status] ?? r.status}</span>
+              {r.last_error && <span className="tiny muted">{String(r.last_error).slice(0, 80)}</span>}
+            </span>
+          )],
           ["", (r) => (
-            <span className="row g-6">
-              {r.status === "SCHEDULED" && (
+            <span className="row g-6 wrap">
+              {(r.status === "QUEUED" || r.status === "FAILED") && (
                 <>
+                  {data?.driver && (
+                    <Button size="sm" variant="primary" onClick={() => run(() => adminApi.post(`/payouts/${r.id}/action`, { action: "send" }), "Sent to M-Pesa")}>
+                      Send now
+                    </Button>
+                  )}
                   <Button
                     size="sm"
-                    variant="primary"
+                    variant={data?.driver ? "outline" : "primary"}
                     onClick={async () => {
-                      const reference = await ask(`Pay ${kes(r.amount_kes)} to ${r.host_name}`, "M-Pesa reference of the payment");
+                      const reference = await ask(`Paid ${kes(r.amount_kes)} to ${r.host_name} by hand`, "M-Pesa reference of the payment");
                       if (reference) await run(() => adminApi.post(`/payouts/${r.id}/action`, { action: "paid", reference }), "Recorded as paid");
                     }}
                   >
@@ -998,15 +1013,11 @@ export function Safety() {
 // ——— Settings, team, audit ———
 
 const SETTING_LABELS: [string, string][] = [
-  ["premium_monthly_kes", "Monthly membership (KES)"],
-  ["premium_annual_kes", "Annual membership (KES)"],
-  ["booking_fee_kes", "Booking fee (KES)"],
+  ["commission_pct", "Konnect commission on bookings (%)"],
   ["promotion_week_kes", "Featured listing, per week (KES)"],
   ["ad_cpm_kes", "Ads: per 1,000 impressions (KES)"],
   ["ad_cpc_kes", "Ads: per click (KES)"],
   ["ad_min_budget_kes", "Ads: minimum first payment (KES)"],
-  ["payout_delay_hours", "Payout after check-in (hours)"],
-  ["referral_days", "Referral reward (days)"],
   ["support_phone", "Support phone"],
   ["safety_phone", "Safety team phone (gets SOS texts)"],
 ];
@@ -1060,6 +1071,8 @@ export function SettingsPage({ me }: { me: AdminMe }) {
               <dd>{i.mpesa.driver === "daraja" ? `Daraja (${i.mpesa.env}) · ${i.mpesa.till ? `till ${i.mpesa.till}` : `shortcode ${i.mpesa.shortcode}`}` : <span className="badge badge-warn">Simulated</span>}</dd>
               <dt>Callback</dt>
               <dd className="small">{i.mpesa.callbackUrl}</dd>
+              <dt>Host payouts (B2C)</dt>
+              <dd>{i.b2c.driver === "daraja" ? `Daraja · shortcode ${i.b2c.shortcode}` : i.b2c.driver === "simulated" ? <span className="badge badge-warn">Simulated</span> : <span className="badge">Not set up · paid by hand</span>}</dd>
               <dt>SMS (Africa's Talking)</dt>
               <dd>{i.sms.configured ? `On${i.sms.senderId ? ` · ${i.sms.senderId}` : ""}` : <span className="badge">Off · codes go to the server log</span>}</dd>
               <dt>Phone confirmation at sign-up</dt>

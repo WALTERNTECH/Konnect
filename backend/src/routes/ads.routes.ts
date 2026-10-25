@@ -1,13 +1,13 @@
 import { Router } from "express";
 import { z } from "zod";
 import { db, many, one } from "../config/db.js";
-import { isPremium, optionalAuth, requireAuth } from "../middleware/auth.js";
+import { optionalAuth, requireAuth } from "../middleware/auth.js";
 import { getSettings } from "../services/settings.js";
 import { badRequest, conflict, notFound } from "../utils/http.js";
 import { storeImage } from "../utils/media.js";
 import { upload } from "./users.routes.js";
 
-// Partner placements for people without a membership, and the self-serve advertiser portal.
+// Partner placements between listings, and the self-serve advertiser portal.
 // Spend is counted in thousandths of a shilling: a CPM impression at KES 320 costs 320 mKES.
 
 export const adsRouter = Router();
@@ -17,7 +17,6 @@ const adView = (a: Record<string, any>) => ({
 });
 
 adsRouter.get("/serve", optionalAuth, async (req, res) => {
-  if (isPremium(req.user)) return res.json({ ad: null });
   const s = await getSettings();
   // Round-robin by fewest impressions among campaigns with budget left.
   const ad = await one<Record<string, any>>(

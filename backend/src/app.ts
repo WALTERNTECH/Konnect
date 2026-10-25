@@ -19,7 +19,6 @@ import { messagesRouter } from "./routes/messages.routes.js";
 import { mpesaRouter } from "./routes/mpesa.routes.js";
 import { notificationsRouter } from "./routes/notifications.routes.js";
 import { safetyRouter } from "./routes/safety.routes.js";
-import { subscriptionsRouter } from "./routes/subscriptions.routes.js";
 import { usersRouter } from "./routes/users.routes.js";
 import { verificationRouter } from "./routes/verification.routes.js";
 
@@ -76,7 +75,6 @@ export function createApp() {
   app.use("/api/listings", listingsRouter);
   app.use("/api/bookings", bookingsRouter);
   app.use("/api/mpesa", mpesaRouter);
-  app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/connect", connectRouter);
   app.use("/api/messages", messagesRouter);
   app.use("/api/safety", safetyRouter);

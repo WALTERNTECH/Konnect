@@ -1,21 +1,24 @@
 import { db, many } from "../config/db.js";
 
-// Prices and platform switches the admin console can change. Defaults are the figures in
-// the product requirements; a row in konnect.settings overrides one.
+// Prices and platform switches the admin console can change. A row in konnect.settings
+// overrides a default.
 
 export const DEFAULTS = {
-  premium_monthly_kes: 999,
-  premium_annual_kes: 8999,
-  booking_fee_kes: 200,
+  /** Konnect's share of every booking payment; the host receives the rest. */
+  commission_pct: 15,
   ad_cpm_kes: 320,
   ad_cpc_kes: 25,
   ad_min_budget_kes: 5000,
   promotion_week_kes: 1000,
-  payout_delay_hours: 24,
-  referral_days: 30,
   support_phone: "",
   safety_phone: "",
 };
+
+/** Konnect's commission and the host's share of an amount paid by M-Pesa. */
+export function splitPayment(amount: number, pct: number) {
+  const commission = Math.round((amount * pct) / 100);
+  return { commission, host: amount - commission };
+}
 export type Settings = typeof DEFAULTS;
 
 let cache: { at: number; value: Settings } | null = null;

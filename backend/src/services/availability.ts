@@ -12,6 +12,8 @@ export async function unavailableNights(q: Q, listingId: string, from: string, t
   const out = new Set<string>();
   const blocks = await many<{ day: string }>(q, `select day from listing_blocks where listing_id = $1 and day >= $2 and day < $3`, [listingId, from, to]);
   for (const b of blocks) out.add(b.day);
+  const l = await many<{ occupancy: string; occupied_until: Date | null; check_in_time: string | null }>(q, `select occupancy, occupied_until, check_in_time from listings where id = $1`, [listingId]);
+  if (l[0]) for (const d of occupiedNights(l[0])) if (d >= from && d < to) out.add(d);
   const bookings = await many<{ check_in: string; check_out: string }>(
     q,
     `select check_in, check_out from bookings where listing_id = $1 and ${ACTIVE_BOOKING} and check_in < $3 and check_out > $2 and ($4::uuid is null or id <> $4)`,
@@ -47,5 +49,43 @@ export async function openSlots(q: Q, l: { host_id: string; duration_min: number
     const clash = busy.some((b) => new Date(b.starts_at).getTime() < t + dur && new Date(b.ends_at).getTime() > t);
     if (!clash) out.push(new Date(t).toISOString());
   }
+  return out;
+}
+
+// ——— Occupancy: what a guest sees on a stay right now ———
+
+const TODAY_EAT = `(now() at time zone 'Africa/Nairobi')::date`;
+
+/** SQL column for a listing aliased l: the check-out date of a paid stay in progress today. */
+export const BOOKED_UNTIL = `(select max(k.check_out) from bookings k where k.listing_id = l.id and k.status in ('CONFIRMED','COMPLETED')
+   and k.check_in <= ${TODAY_EAT} and k.check_out > ${TODAY_EAT}) as booked_until`;
+
+/** SQL condition: the stay is free right now (no host-set occupancy, no stay in progress). */
+export const AVAILABLE_NOW = `not (l.occupancy = 'occupied' and l.occupied_until > now())
+  and not exists (select 1 from bookings k where k.listing_id = l.id and k.status in ('CONFIRMED','COMPLETED') and k.check_in <= ${TODAY_EAT} and k.check_out > ${TODAY_EAT})`;
+
+export type Occupancy = { status: "available" | "occupied"; until: string | null };
+
+/** Occupied until the later of the host's own check-out time and a Konnect stay in progress. */
+export function occupancyOf(l: { occupancy?: string; occupied_until?: Date | string | null; booked_until?: string | null; check_out_time?: string | null }): Occupancy {
+  const now = Date.now();
+  const times: number[] = [];
+  if (l.occupancy === "occupied" && l.occupied_until && new Date(l.occupied_until).getTime() > now) times.push(new Date(l.occupied_until).getTime());
+  if (l.booked_until) times.push(new Date(`${l.booked_until}T${l.check_out_time ?? "10:00"}:00+03:00`).getTime());
+  const until = times.filter((t) => t > now).sort((a, b) => b - a)[0];
+  return until ? { status: "occupied", until: new Date(until).toISOString() } : { status: "available", until: null };
+}
+
+/** Nights a host has marked as taken by someone already staying, from tonight up to their check-out. */
+export function occupiedNights(l: { occupancy?: string; occupied_until?: Date | string | null; check_in_time?: string | null }): string[] {
+  if (l.occupancy !== "occupied" || !l.occupied_until) return [];
+  const until = new Date(l.occupied_until);
+  if (until.getTime() <= Date.now()) return [];
+  const eat = new Date(until.getTime() + 3 * 3_600_000).toISOString();
+  const day = eat.slice(0, 10);
+  // A new guest can arrive on the check-out day unless the current one leaves after check-in time.
+  const last = eat.slice(11, 16) > (l.check_in_time ?? "14:00") ? day : addDays(day, -1);
+  const out: string[] = [];
+  for (let d = todayEAT(); d <= last; d = addDays(d, 1)) out.push(d);
   return out;
 }

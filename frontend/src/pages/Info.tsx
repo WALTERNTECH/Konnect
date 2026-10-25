@@ -51,13 +51,13 @@ export function Terms() {
       <h2 className="h-2" style={{ color: "var(--ink)" }}>Who can use Konnect</h2>
       <p>You must be 18 or older and give accurate details, including your date of birth and phone number. One account per person.</p>
       <h2 className="h-2" style={{ color: "var(--ink)" }}>Bookings</h2>
-      <p>A booking is confirmed when M-Pesa confirms your payment. Paid bookings can be cancelled up to 48 hours before they start for a refund to the paying M-Pesa number. The booking fee covers payment handling and support. Hosts and practitioners are responsible for the accuracy of their listings and for the service they provide.</p>
-      <h2 className="h-2" style={{ color: "var(--ink)" }}>Membership and Connect</h2>
-      <p>Membership is paid in advance for 30 or 365 days and does not renew on its own. Connect is a social service for adults to meet one another. Offering or requesting sexual services, or money in exchange for company, is not allowed and leads to account closure.</p>
+      <p>A booking is confirmed when M-Pesa confirms your payment. Paid bookings can be cancelled up to 48 hours before they start for a refund to the paying M-Pesa number. Hosts and practitioners are responsible for the accuracy of their listings and for the service they provide.</p>
+      <h2 className="h-2" style={{ color: "var(--ink)" }}>Connect</h2>
+      <p>Connect is a social service for adults to meet one another. Offering or requesting sexual services, or money in exchange for company, is not allowed and leads to account closure.</p>
       <h2 className="h-2" style={{ color: "var(--ink)" }}>Conduct</h2>
       <p>No harassment, impersonation, scams or content involving anyone under 18. Konnect may suspend or close accounts that break these terms and will cooperate with lawful requests from the authorities.</p>
       <h2 className="h-2" style={{ color: "var(--ink)" }}>Payments</h2>
-      <p>All payments are made by M-Pesa. Payouts to hosts are sent to their registered M-Pesa number after check-in or the appointment.</p>
+      <p>All payments are made by M-Pesa. When a booking is paid, Konnect keeps 15% as its commission and sends the other 85% to the host's registered payout number straight away. If a paid booking is cancelled, Konnect refunds the guest and recovers the host's share from the host.</p>
     </Doc>
   );
 }

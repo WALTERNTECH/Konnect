@@ -184,8 +184,6 @@ export function TripDetail() {
           <dl className="kv">
             <dt>{b.kind === "STAY" ? `${kes(b.price.unit)} × ${plural(b.nights ?? 0, "night")}` : "Session"}</dt>
             <dd>{kes(b.price.subtotal)}</dd>
-            <dt>Booking fee</dt>
-            <dd>{kes(b.price.fee)}</dd>
             {b.price.payLater > 0 && (
               <>
                 <dt>Paid at the session</dt>

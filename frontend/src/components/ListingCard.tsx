@@ -2,8 +2,7 @@ import { ChevronLeft, ChevronRight, Star } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, useApi } from "../api/client";
-import { useAuth } from "../context/AuthContext";
-import { CATEGORY, kes, plural, thumb } from "../lib/format";
+import { CATEGORY, fmtDateTime, kes, plural, thumb } from "../lib/format";
 import type { Ad, ListingCard as L } from "../types";
 import { Mark } from "./brand/Logo";
 
@@ -58,6 +57,7 @@ export function ListingCard({ l, eager }: { l: L; eager?: boolean }) {
         </div>
         <div className="lcard-title">{l.title}</div>
         <div className="lcard-meta">{meta}</div>
+        <Availability a={l.availability} />
         <div className="lcard-price">
           <b>{kes(l.priceKes)}</b> <span className="muted">/ {l.unit}</span>
         </div>
@@ -66,12 +66,18 @@ export function ListingCard({ l, eager }: { l: L; eager?: boolean }) {
   );
 }
 
-/** Fetches one partner placement for people without a membership. Members never see one. */
+/** Fetches one partner placement for a slot. */
 export function usePartnerAd(slot: string) {
-  const { me } = useAuth();
-  const member = me?.premium.active;
-  const { data } = useApi<{ ad: Ad | null }>(member ? null : `/ads/serve?slot=${slot}`, { staleMs: 5 * 60_000 });
-  return member ? null : (data?.ad ?? null);
+  const { data } = useApi<{ ad: Ad | null }>(`/ads/serve?slot=${slot}`, { staleMs: 5 * 60_000 });
+  return data?.ad ?? null;
+}
+
+/** "Available now" or "Occupied · free from Tue 28 Oct, 10:00" for a stay. */
+export function Availability({ a, long }: { a: L["availability"]; long?: boolean }) {
+  if (!a) return null;
+  if (a.status === "available") return <span className="avail ok">Available now</span>;
+  const when = a.until ? fmtDateTime(a.until) : "";
+  return <span className="avail busy">{long ? `Occupied · the current guest checks out ${when}` : `Occupied · free from ${when}`}</span>;
 }
 
 function openAd(ad: Ad) {

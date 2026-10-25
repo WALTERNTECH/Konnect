@@ -93,6 +93,8 @@ function Wizard({ initial, listing, onSaved }: { initial: Form; listing?: Listin
   const toast = useToast();
   const { refresh } = useAuth();
   const { data: meta } = useMeta();
+  const { me } = useAuth();
+  const pct = meta?.commissionPct ?? 15;
   const [f, setF] = useState<Form>(initial);
   const [step, setStep] = useState(0);
   const [id, setId] = useState(listing?.id ?? null);
@@ -350,16 +352,14 @@ function Wizard({ initial, listing, onSaved }: { initial: Form; listing?: Listin
               {Number(f.priceKes) >= 100 && (
                 <div className="inset">
                   <dl className="kv">
-                    <dt>Guest pays</dt>
-                    <dd>
-                      {kes(Number(f.priceKes) + (meta?.bookingFeeKes ?? 200))}
-                      {stay ? " for one night" : ""}
-                    </dd>
-                    <dt>Booking fee (to Konnect)</dt>
-                    <dd>{kes(meta?.bookingFeeKes ?? 200)}</dd>
+                    <dt>Guest pays{stay ? " for one night" : ""}</dt>
+                    <dd>{kes(Number(f.priceKes))}</dd>
+                    <dt>Konnect ({pct}%)</dt>
+                    <dd>− {kes(Math.round((Number(f.priceKes) * pct) / 100))}</dd>
                     <dt className="total">You receive</dt>
-                    <dd className="total">{kes(Number(f.priceKes))}</dd>
+                    <dd className="total">{kes(Number(f.priceKes) - Math.round((Number(f.priceKes) * pct) / 100))}</dd>
                   </dl>
+                  <p className="tiny muted mt-8">Sent to your M-Pesa number {me?.payoutPhone.replace(/^\+254/, "0")} as soon as the guest's payment clears. Change it in Account.</p>
                 </div>
               )}
             </>

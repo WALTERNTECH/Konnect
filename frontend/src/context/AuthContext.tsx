@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { api, invalidate, onTokenChange, tokenStore } from "../api/client";
 import type { Me } from "../types";
 
-type SignupInput = { fullName: string; email: string; phone: string; password: string; dateOfBirth: string; gender: string; referralCode?: string };
+type SignupInput = { fullName: string; email: string; phone: string; password: string; dateOfBirth: string; gender: string; payoutPhone?: string };
 
 type Auth = {
   me: Me | null;

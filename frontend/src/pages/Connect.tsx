@@ -9,13 +9,17 @@ import { useToast } from "../context/ui";
 import { activeLabel, GENDER, INTENT, ROLE } from "../lib/format";
 import type { ConnectCard, ConnectProfile } from "../types";
 import { ReportModal } from "./ListingDetail";
-import { MEMBERSHIP_INCLUDES, PlanPicker, useJoin } from "./Membership";
 
 // ——— Gate ———
 
-function Paywall() {
-  const { me } = useAuth();
-  const join = useJoin();
+/** Connect is for signed-in adults; visitors see what it is and sign in. */
+function SignedOut() {
+  const points = [
+    "Browse people who've set up a Connect profile, and like the ones you'd like to meet",
+    "Messaging opens only when you both like each other",
+    "Block, report, meetup sharing and SOS in every conversation",
+    "Phone numbers and emails are never shown",
+  ];
   return (
     <div className="page page-mid section-tight">
       <div className="paywall">
@@ -25,22 +29,25 @@ function Paywall() {
         <div className="paywall-body">
           <div className="eyebrow">Connect</div>
           <h1 className="display d-2">Introductions between members</h1>
-          <p className="soft">Connect is part of Konnect Membership. Members browse one another, like, match and message. Only members can see or be seen.</p>
+          <p className="soft">Members browse one another, like, match and talk inside Konnect.</p>
           <div className="stack g-10">
-            {MEMBERSHIP_INCLUDES.map((x) => (
+            {points.map((x) => (
               <div key={x} className="row g-10 small">
                 <BadgeCheck size={17} style={{ color: "var(--accent)", flex: "none" }} /> {x}
               </div>
             ))}
           </div>
-          {join.plans.data && <PlanPicker value={join.period} onChange={join.setPeriod} plans={join.plans.data.plans} />}
-          <Button variant="primary" size="lg" block onClick={join.start}>
-            {me ? "Join with M-Pesa" : "Sign in to join"}
-          </Button>
-          <p className="tiny muted">Konnect is for adults 18 and over. Every member's phone number is confirmed; ID and income badges are added after document review.</p>
+          <div className="row g-8 wrap">
+            <LinkButton to="/signup?next=/connect" variant="primary" size="lg">
+              Create an account
+            </LinkButton>
+            <LinkButton to="/login?next=/connect" size="lg">
+              Sign in
+            </LinkButton>
+          </div>
+          <p className="tiny muted">Konnect is for adults 18 and over. ID and income badges are added after document review.</p>
         </div>
       </div>
-      {join.sheet}
     </div>
   );
 }
@@ -240,12 +247,12 @@ export default function Connect() {
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [filterOpen, setFilterOpen] = useState(false);
   const [setup, setSetup] = useState(false);
-  const browse = useApi<{ items: ConnectCard[]; hasProfile: boolean }>(me?.premium.active && tab === "discover" ? `/connect/browse?${qsOf(filters, "browse")}` : null);
-  const likes = useApi<{ items: ConnectCard[] }>(me?.premium.active && tab === "likes" ? "/connect/likes" : null, { staleMs: 0 });
+  const browse = useApi<{ items: ConnectCard[]; hasProfile: boolean }>(me && tab === "discover" ? `/connect/browse?${qsOf(filters, "browse")}` : null);
+  const likes = useApi<{ items: ConnectCard[] }>(me && tab === "likes" ? "/connect/likes" : null, { staleMs: 0 });
   useEffect(() => onLive("match", () => void invalidate("/connect")), []);
 
   if (!ready) return null;
-  if (!me?.premium.active) return <Paywall />;
+  if (!me) return <SignedOut />;
 
   if (!me.hasConnectProfile || setup)
     return (
@@ -422,11 +429,11 @@ export function ConnectProfileView() {
   const { me } = useAuth();
   const nav = useNavigate();
   const toast = useToast();
-  const { data, loading, error, reload } = useApi<{ profile: ConnectProfile }>(me?.premium.active ? `/connect/profiles/${userId}` : null, { staleMs: 0 });
+  const { data, loading, error, reload } = useApi<{ profile: ConnectProfile }>(me ? `/connect/profiles/${userId}` : null, { staleMs: 0 });
   const [i, setI] = useState(0);
   const [report, setReport] = useState(false);
   const { react, match, setMatch } = useReact();
-  if (!me?.premium.active) return <Paywall />;
+  if (!me) return <SignedOut />;
   if (loading) return <div className="page section"><Skeleton h={520} r={22} /></div>;
   if (error || !data)
     return (

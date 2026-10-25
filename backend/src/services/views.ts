@@ -1,22 +1,21 @@
 import { ageFrom } from "../utils/kenya.js";
+import { occupancyOf } from "./availability.js";
 
 // How rows are shown to other people. Phone numbers and emails never leave through these.
 
-export type Badges = { phone: boolean; id: boolean; income: boolean; background: boolean; premium: boolean };
+export type Badges = { phone: boolean; id: boolean; income: boolean; background: boolean };
 
 export function badgesOf(u: {
   phone_verified_at?: Date | null;
   id_verified_at?: Date | null;
   income_verified_at?: Date | null;
   background_checked_at?: Date | null;
-  premium_until?: Date | null;
 }): Badges {
   return {
     phone: Boolean(u.phone_verified_at),
     id: Boolean(u.id_verified_at),
     income: Boolean(u.income_verified_at),
     background: Boolean(u.background_checked_at),
-    premium: Boolean(u.premium_until && new Date(u.premium_until) > new Date()),
   };
 }
 
@@ -62,6 +61,7 @@ export function listingCard(l: Record<string, unknown>) {
     featured: Boolean(l.featured_until && new Date(l.featured_until as string) > new Date()),
     sample: Boolean(l.is_sample),
     status: l.status,
+    availability: l.type === "STAY" ? occupancyOf(l as never) : null,
   };
 }
 

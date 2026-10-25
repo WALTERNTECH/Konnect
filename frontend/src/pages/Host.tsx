@@ -1,19 +1,70 @@
-import { BedDouble, CalendarDays, Check, Flower2, LayoutDashboard, List, Plus, Sparkles, Wallet } from "lucide-react";
+import { BedDouble, CalendarDays, Check, DoorOpen, Flower2, LayoutDashboard, List, Plus, Sparkles, Wallet } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { api, errorMessage, invalidate, useApi } from "../api/client";
 import { Calendar } from "../components/Calendar";
+import { Availability } from "../components/ListingCard";
 import { useMeta } from "../components/SearchPanel";
 import { BarChart } from "../components/Chart";
 import { PaymentSheet } from "../components/PaymentSheet";
-import { Button, Empty, LinkButton, Modal, PageHead, Skeleton, StatusBadge } from "../components/ui";
+import { Button, Empty, Input, LinkButton, Modal, PageHead, Skeleton, StatusBadge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ui";
-import { fmtDate, fmtDay, fmtRange, fmtTime, kes, plural, thumb } from "../lib/format";
+import { addDays, fmtDate, fmtDay, fmtRange, fmtTime, kes, plural, thumb, todayYmd } from "../lib/format";
 import type { Booking, ListingCard } from "../types";
 import { ListingEditor } from "./ListingEditor";
 
 type HostListing = ListingCard & { bookings: number; rejectionReason: string | null; featuredUntil: string | null; updatedAt: string };
+
+const PAYOUT_LABEL: Record<string, string> = { QUEUED: "Waiting to send", SENDING: "Sending", PAID: "Sent", FAILED: "Retrying", HELD: "Held" };
+
+/** Nairobi wall-clock for a datetime-local input, and back. */
+const toLocalInput = (iso: string) => new Date(new Date(iso).getTime() + 3 * 3_600_000).toISOString().slice(0, 16);
+const fromLocalInput = (v: string) => new Date(`${v}:00+03:00`).toISOString();
+
+function OccupancyModal({ l, onClose, onSaved }: { l: HostListing; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
+  const occupied = l.availability?.status === "occupied";
+  const [status, setStatus] = useState<"available" | "occupied">(occupied ? "occupied" : "available");
+  const [until, setUntil] = useState(() => (l.availability?.until ? toLocalInput(l.availability.until) : `${addDays(todayYmd(), 1)}T10:00`));
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.put(`/listings/${l.id}/occupancy`, status === "occupied" ? { status, until: fromLocalInput(until) } : { status });
+      toast(status === "occupied" ? "Marked occupied" : "Marked available", "ok");
+      onSaved();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal open onClose={onClose} title={l.title}>
+      <div className="stack g-16">
+        <div className="segmented" style={{ width: "100%" }}>
+          <button type="button" style={{ flex: 1 }} aria-pressed={status === "available"} onClick={() => setStatus("available")}>
+            Available
+          </button>
+          <button type="button" style={{ flex: 1 }} aria-pressed={status === "occupied"} onClick={() => setStatus("occupied")}>
+            Occupied
+          </button>
+        </div>
+        {status === "occupied" ? (
+          <>
+            <Input label="The current guest checks out" type="datetime-local" value={until} min={toLocalInput(new Date().toISOString())} onChange={(e) => setUntil(e.target.value)} hint="Guests see when it's free, and can book from then. It turns back to available by itself after this time." />
+          </>
+        ) : (
+          <p className="small muted">Guests see “Available now” and can book any open night on your calendar.</p>
+        )}
+        <Button variant="primary" block loading={busy} disabled={status === "occupied" && !until} onClick={save}>
+          Save
+        </Button>
+      </div>
+    </Modal>
+  );
+}
 
 export default function Host() {
   const { me } = useAuth();
@@ -71,12 +122,12 @@ function HostIntro() {
     ["Create the listing", "Photos, a description, your price, and your calendar or hours."],
     ["Konnect reviews it", "Usually within a day. You'll get a message when it's live."],
     ["Guests book and pay", "Payment is taken by M-Pesa when they book, before they arrive."],
-    ["You're paid", "To your M-Pesa within 24 hours of check-in or the appointment."],
+    ["85% goes to your M-Pesa", "Straight away, to the payout number on your account. Konnect keeps 15%."],
   ];
   return (
     <div className="page page-mid">
       <PageHead eyebrow="Hosting" title="Host a stay or offer a treatment">
-        For apartment and villa hosts, and for massage therapists, physiotherapists and beauty practitioners. Listing is free; Konnect adds a KES 200 booking fee for the guest.
+        For apartment and villa hosts, and for massage therapists, physiotherapists and beauty practitioners. Listing is free. When a guest pays, 85% is sent to your M-Pesa and Konnect keeps 15%.
       </PageHead>
       <div className="grid-cards" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
         <Link to={me ? "/host/listings/new?type=STAY" : "/login?next=/host/listings/new?type=STAY"} className="card card-pad stack g-12" style={{ minHeight: 200 }}>
@@ -134,7 +185,7 @@ function Overview() {
           <span className="value">{kes(t.paid)}</span>
         </div>
         <div className="stat">
-          <span className="label">Scheduled</span>
+          <span className="label">On the way</span>
           <span className="value">{kes(t.scheduled)}</span>
           {t.held > 0 && <span className="delta">{kes(t.held)} held</span>}
         </div>
@@ -151,7 +202,7 @@ function Overview() {
       <section className="card card-pad stack g-12">
         <div className="row between">
           <h2 className="h-2">Earnings, last 12 months</h2>
-          <span className="small muted">After the booking fee</span>
+          <span className="small muted">Your 85%</span>
         </div>
         <BarChart data={series} format={(n) => kes(n)} />
       </section>
@@ -187,6 +238,11 @@ function BookingRows({ items }: { items: Booking[] }) {
           </div>
           <div className="stack g-4" style={{ alignItems: "flex-end" }}>
             <StatusBadge status={b.status} />
+            {b.payout && (
+              <span className="small num">
+                {kes(b.payout.amount)} to you · <span className={b.payout.status === "PAID" ? "accent-text" : "muted"}>{PAYOUT_LABEL[b.payout.status]}</span>
+              </span>
+            )}
             {b.counterpart.phone && (
               <a className="small link num" href={`tel:${b.counterpart.phone}`}>
                 {b.counterpart.phone.replace(/^\+254/, "0")}
@@ -205,6 +261,7 @@ function Listings() {
   const [promote, setPromote] = useState<HostListing | null>(null);
   const [weeks, setWeeks] = useState(1);
   const [paying, setPaying] = useState(false);
+  const [occupancy, setOccupancy] = useState<HostListing | null>(null);
   const week = useMeta().data?.promotionWeekKes ?? 1000;
   if (loading) return <Skeleton h={260} r={16} />;
   if (!data?.items.length)
@@ -239,13 +296,19 @@ function Listings() {
             <span className="small muted">
               {l.neighbourhood}, {l.city} · {kes(l.priceKes)} / {l.unit} · {plural(l.bookings, "booking")}
             </span>
+            <Availability a={l.availability} />
             {l.status === "REJECTED" && l.rejectionReason && <span className="small" style={{ color: "var(--danger)" }}>{l.rejectionReason}</span>}
           </div>
           <div className="row g-6 wrap" style={{ justifyContent: "flex-end" }}>
             {l.type === "STAY" && (
-              <LinkButton size="sm" to={`/host/calendar/${l.id}`} icon={<CalendarDays />}>
-                Calendar
-              </LinkButton>
+              <>
+                <Button size="sm" variant={l.availability?.status === "occupied" ? "primary" : "outline"} icon={<DoorOpen />} onClick={() => setOccupancy(l)}>
+                  {l.availability?.status === "occupied" ? "Occupied" : "Available"}
+                </Button>
+                <LinkButton size="sm" to={`/host/calendar/${l.id}`} icon={<CalendarDays />}>
+                  Calendar
+                </LinkButton>
+              </>
             )}
             {(l.status === "DRAFT" || l.status === "REJECTED") && (
               <Button size="sm" variant="primary" onClick={() => act(l, "submit")}>
@@ -273,6 +336,17 @@ function Listings() {
           </div>
         </div>
       ))}
+      {occupancy && (
+        <OccupancyModal
+          l={occupancy}
+          onClose={() => setOccupancy(null)}
+          onSaved={() => {
+            setOccupancy(null);
+            void reload();
+            void invalidate("/listings");
+          }}
+        />
+      )}
       <Modal open={Boolean(promote) && !paying} onClose={() => setPromote(null)} title="Feature this listing">
         <div className="stack g-16">
           <p className="soft">Featured listings appear first in search and on the home page, marked “Featured”.</p>
@@ -324,9 +398,11 @@ function Bookings() {
 }
 
 function Payouts() {
-  const { data, loading } = useApi<{ items: { id: string; amount_kes: number; status: string; due_at: string; paid_at: string | null; reference: string | null; booking_ref: string; title: string; phone: string }[] }>("/host/payouts", { staleMs: 0 });
+  const { data, loading } = useApi<{
+    items: { id: string; amount_kes: number; gross_kes: number | null; commission_kes: number | null; status: string; created_at: string; paid_at: string | null; reference: string | null; booking_ref: string; title: string; phone: string }[];
+  }>("/host/payouts", { staleMs: 0 });
   if (loading) return <Skeleton h={200} />;
-  if (!data?.items.length) return <Empty icon={<Wallet />} title="No payouts yet">Each paid booking creates a payout to your M-Pesa, sent within 24 hours of check-in or the appointment.</Empty>;
+  if (!data?.items.length) return <Empty icon={<Wallet />} title="No payouts yet">When a guest pays, your 85% is sent straight to your M-Pesa and listed here.</Empty>;
   return (
     <div className="card card-pad">
       <div className="list">
@@ -335,12 +411,13 @@ function Payouts() {
             <div className="grow stack g-4">
               <span className="strong">{p.title}</span>
               <span className="small muted">
-                {p.booking_ref} · {p.status === "PAID" ? `Sent ${fmtDate(p.paid_at!)}${p.reference ? ` · ${p.reference}` : ""}` : p.status === "HELD" ? "Held: booking cancelled" : `Due ${fmtDate(p.due_at)}`} · to {p.phone.replace(/^\+254/, "0")}
+                {p.booking_ref} · {p.status === "PAID" ? `Sent ${fmtDate(p.paid_at!)}${p.reference ? ` · ${p.reference}` : ""}` : p.status === "HELD" ? "Held: booking cancelled" : fmtDate(p.created_at)} · to {p.phone.replace(/^\+254/, "0")}
+                {p.gross_kes ? ` · ${kes(p.gross_kes)} paid, ${kes(p.commission_kes ?? 0)} to Konnect` : ""}
               </span>
             </div>
             <div className="stack g-4" style={{ alignItems: "flex-end" }}>
               <span className="num strong">{kes(p.amount_kes)}</span>
-              <span className={`badge ${p.status === "PAID" ? "badge-ok" : p.status === "HELD" ? "badge-danger" : "badge-warn"}`}>{p.status === "PAID" ? "Paid" : p.status === "HELD" ? "Held" : "Scheduled"}</span>
+              <span className={`badge ${p.status === "PAID" ? "badge-ok" : p.status === "HELD" ? "badge-danger" : "badge-warn"}`}>{PAYOUT_LABEL[p.status] ?? p.status}</span>
             </div>
           </div>
         ))}

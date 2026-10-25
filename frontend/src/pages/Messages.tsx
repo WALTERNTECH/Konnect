@@ -14,21 +14,14 @@ type ThreadData = { matchId: string; active: boolean; user: Thread["user"]; item
 export default function Messages() {
   const { matchId } = useParams();
   const { me } = useAuth();
-  const threads = useApi<{ items: Thread[] }>(me?.premium.active ? "/messages/threads" : null, { staleMs: 10_000 });
+  const threads = useApi<{ items: Thread[] }>(me ? "/messages/threads" : null, { staleMs: 10_000 });
   useEffect(() => {
     const offs = [onLive("message", () => void threads.reload()), onLive("match", () => void threads.reload()), onLive("unmatch", () => void threads.reload())];
     return () => offs.forEach((o) => o());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (!me?.premium.active)
-    return (
-      <div className="page">
-        <Empty icon={<MessageCircle />} title="Messages are part of Membership" action={<LinkButton to="/membership" variant="primary">View membership</LinkButton>}>
-          Members who like each other can talk here.
-        </Empty>
-      </div>
-    );
+  if (!me) return null;
 
   return (
     <div className={`inbox ${matchId ? "has-thread" : ""}`}>

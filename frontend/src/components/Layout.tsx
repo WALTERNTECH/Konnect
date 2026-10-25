@@ -2,7 +2,6 @@ import {
   Bell,
   CalendarDays,
   Compass,
-  Crown,
   Flower2,
   HeartHandshake,
   LayoutDashboard,
@@ -122,7 +121,7 @@ function AccountMenu() {
         <>
           <div style={{ padding: "8px 10px 10px" }}>
             <div className="strong">{me.fullName}</div>
-            <div className="tiny muted">{me.premium.active ? "Member" : me.email}</div>
+            <div className="tiny muted">{me.email}</div>
           </div>
           <hr />
           <Link to="/trips" onClick={close}>
@@ -130,9 +129,6 @@ function AccountMenu() {
           </Link>
           <Link to="/messages" onClick={close}>
             <MessageCircle /> Messages
-          </Link>
-          <Link to="/membership" onClick={close}>
-            <Crown /> Membership
           </Link>
           <hr />
           <Link to="/host" onClick={close}>
@@ -271,7 +267,6 @@ export function Footer() {
       <div className="page footer-inner">
         <span>© {new Date().getFullYear()} Konnect</span>
         <nav aria-label="Footer">
-          <Link to="/membership">Membership</Link>
           <Link to="/host">Host</Link>
           <Link to="/advertise">Advertise</Link>
           <Link to="/safety">Safety</Link>

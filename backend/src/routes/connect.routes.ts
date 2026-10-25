@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { db, many, one } from "../config/db.js";
-import { requireAuth, requirePremium, requireVerifiedPhone } from "../middleware/auth.js";
+import { requireAuth, requireVerifiedPhone } from "../middleware/auth.js";
 import { emit, isOnline } from "../services/events.js";
 import { notify } from "../services/notify.js";
 import { connectCard, firstName } from "../services/views.js";
@@ -79,11 +79,10 @@ connectRouter.put("/profile/photos", requireAuth, async (req, res) => {
   res.json({ photos });
 });
 
-// Who can be seen: members with a visible profile, an active plan, an active account, and no
+// Who can be seen: people with a visible profile, an active account, and no
 // block in either direction.
 const VISIBLE = `
   c.visible and u.status = 'active' and u.id <> $1
-  and exists (select 1 from subscriptions s where s.user_id = u.id and s.status = 'ACTIVE' and s.expires_at > now())
   and not exists (select 1 from blocks b where (b.blocker_id = $1 and b.blocked_id = u.id) or (b.blocker_id = u.id and b.blocked_id = $1))`;
 
 const Browse = z.object({
@@ -94,14 +93,13 @@ const Browse = z.object({
   ageMax: z.coerce.number().int().min(18).max(99).optional(),
   city: z.string().max(40).optional(),
   interest: z.string().max(30).optional(),
-  verified: z.coerce.boolean().optional(),
+  verified: z.stringbool().optional(),
   mode: z.enum(["browse", "swipe"]).default("browse"),
   page: z.coerce.number().int().min(1).max(100).default(1),
 });
 
 const CARD_COLS = `c.*, u.full_name, u.date_of_birth, u.gender, u.city, u.neighbourhood, u.photo_url, u.last_seen_at, u.phone_verified_at, u.id_verified_at,
   u.income_verified_at, u.background_checked_at,
-  (select max(s.expires_at) from subscriptions s where s.user_id = u.id and s.status = 'ACTIVE') as premium_until,
   exists (select 1 from likes k where k.from_user = $1 and k.to_user = u.id and k.kind = 'like') as liked,
   exists (select 1 from likes k where k.from_user = u.id and k.to_user = $1 and k.kind = 'like') as liked_you`;
 
@@ -132,14 +130,14 @@ async function browse(userId: string, query: unknown) {
   return rows.map(connectCard);
 }
 
-connectRouter.get("/browse", requireAuth, requirePremium, async (req, res) => {
+connectRouter.get("/browse", requireAuth, async (req, res) => {
   res.json({ items: await browse(req.user!.id, req.query), hasProfile: Boolean(await myProfile(req.user!.id)) });
 });
 
 /** The architecture document's name for the same thing. */
-export const usersConnectHandler = [requireAuth, requirePremium, async (req: any, res: any) => res.json({ items: await browse(req.user!.id, req.query) })];
+export const usersConnectHandler = [requireAuth, async (req: any, res: any) => res.json({ items: await browse(req.user!.id, req.query) })];
 
-connectRouter.get("/profiles/:userId", requireAuth, requirePremium, async (req, res) => {
+connectRouter.get("/profiles/:userId", requireAuth, async (req, res) => {
   if (!z.uuid().safeParse(req.params.userId).success) throw notFound("Profile not found");
   const row = await one(
     db(),
@@ -152,7 +150,7 @@ connectRouter.get("/profiles/:userId", requireAuth, requirePremium, async (req, 
   res.json({ profile: { ...connectCard(row), bio: row.bio, matchId: row.match_id ?? null, online: isOnline(String(row.user_id)) } });
 });
 
-connectRouter.get("/likes", requireAuth, requirePremium, async (req, res) => {
+connectRouter.get("/likes", requireAuth, async (req, res) => {
   const rows = await many(
     db(),
     `select ${CARD_COLS} from connect_profiles c join users u on u.id = c.user_id
@@ -196,10 +194,10 @@ const react = (kind: "like" | "pass") => async (req: Request, res: Response) => 
   }
   res.json(result);
 };
-connectRouter.post("/profiles/:userId/like", requireAuth, requirePremium, requireVerifiedPhone, react("like"));
-connectRouter.post("/profiles/:userId/pass", requireAuth, requirePremium, react("pass"));
+connectRouter.post("/profiles/:userId/like", requireAuth, requireVerifiedPhone, react("like"));
+connectRouter.post("/profiles/:userId/pass", requireAuth, react("pass"));
 
-connectRouter.get("/matches", requireAuth, requirePremium, async (req, res) => {
+connectRouter.get("/matches", requireAuth, async (req, res) => {
   res.json({ items: await threads(req.user!.id) });
 });
 

@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { db, many, one } from "../config/db.js";
 import { optionalAuth, requireAuth, requireVerifiedPhone } from "../middleware/auth.js";
-import { openSlots, unavailableNights, type Hours } from "../services/availability.js";
+import { AVAILABLE_NOW, BOOKED_UNTIL, openSlots, unavailableNights, type Hours } from "../services/availability.js";
 import { startPayment } from "../services/payments.js";
 import { getSettings } from "../services/settings.js";
 import { listingCard, publicHost } from "../services/views.js";
@@ -41,14 +41,15 @@ const Browse = z.object({
   category: z.enum(CATEGORIES).optional(),
   mode: z.enum(["home", "studio"]).optional(),
   amenity: z.union([z.string(), z.array(z.string())]).optional(),
+  availableNow: z.stringbool().optional(),
   sort: z.enum(["recommended", "price_asc", "price_desc", "rating", "newest"]).default("recommended"),
   page: z.coerce.number().int().min(1).max(200).default(1),
   limit: z.coerce.number().int().min(1).max(48).default(24),
 });
 
-// Featured listings first, then listings whose host is a member, then rating.
+// Featured listings first, then real ones before samples, then rating.
 const ORDER: Record<string, string> = {
-  recommended: `(l.featured_until > now()) desc nulls last, host_premium desc, l.is_sample asc, l.rating_avg desc, l.created_at desc`,
+  recommended: `(l.featured_until > now()) desc nulls last, l.is_sample asc, l.rating_avg desc, l.created_at desc`,
   price_asc: `l.price_kes asc`,
   price_desc: `l.price_kes desc`,
   rating: `l.rating_avg desc, l.rating_count desc`,
@@ -70,6 +71,7 @@ listingsRouter.get("/", optionalAuth, async (req, res) => {
   if (f.bedrooms) where.push(`(l.type <> 'STAY' or l.bedrooms >= ${p(f.bedrooms)})`);
   if (f.category) where.push(`l.category = ${p(f.category)}`);
   if (f.mode) where.push(`${p(f.mode)} = any(l.service_modes)`);
+  if (f.availableNow) where.push(`l.type = 'STAY' and ${AVAILABLE_NOW}`);
   const amenities = f.amenity ? ([] as string[]).concat(f.amenity) : [];
   if (amenities.length) where.push(`l.amenities @> ${p(amenities)}::text[]`);
   if (f.checkIn && f.checkOut && f.checkOut > f.checkIn) {
@@ -82,8 +84,7 @@ listingsRouter.get("/", optionalAuth, async (req, res) => {
   const offset = (f.page - 1) * f.limit;
   const rows = await many(
     db(),
-    `select l.*, count(*) over () as total,
-            exists (select 1 from subscriptions s where s.user_id = l.host_id and s.status = 'ACTIVE' and s.expires_at > now()) as host_premium
+    `select l.*, count(*) over () as total, ${BOOKED_UNTIL}
        from listings l join users u on u.id = l.host_id
       where ${where.join(" and ")}
       order by ${ORDER[f.sort]}
@@ -99,12 +100,12 @@ listingsRouter.get("/meta", async (_req, res) => {
     `select type, city, neighbourhood, count(*)::int as n, min(price_kes) as min, max(price_kes) as max from listings where status = 'APPROVED' group by 1, 2, 3 order by n desc`,
   );
   const s = await getSettings();
-  res.json({ neighbourhoods: NEIGHBOURHOODS, amenities: AMENITIES, categories: CATEGORIES, counts, bookingFeeKes: s.booking_fee_kes, promotionWeekKes: s.promotion_week_kes });
+  res.json({ neighbourhoods: NEIGHBOURHOODS, amenities: AMENITIES, categories: CATEGORIES, counts, commissionPct: s.commission_pct, promotionWeekKes: s.promotion_week_kes });
 });
 
 async function loadListing(id: string) {
   if (!z.uuid().safeParse(id).success) throw notFound("Listing not found");
-  return one<Record<string, any>>(db(), `select * from listings where id = $1`, [id]);
+  return one<Record<string, any>>(db(), `select l.*, ${BOOKED_UNTIL} from listings l where l.id = $1`, [id]);
 }
 
 /** Owner or nobody: used by every edit route. */
@@ -296,6 +297,29 @@ listingsRouter.delete("/:id", requireAuth, async (req, res) => {
   if (used) await db().query(`update listings set status = 'PAUSED' where id = $1`, [l.id]);
   else await db().query(`delete from listings where id = $1`, [l.id]);
   res.json({ removed: !used, paused: Boolean(used) });
+});
+
+/**
+ * A host saying the stay is occupied, and when the current guest checks out, or that it's free.
+ * Nights before that check-out can't be booked; the status clears itself once the time passes.
+ */
+listingsRouter.put("/:id/occupancy", requireAuth, async (req, res) => {
+  const l = await ownListing(String(req.params.id), req.user!.id);
+  if (l.type !== "STAY") throw badRequest("Only stays can be marked occupied");
+  const b = z
+    .discriminatedUnion("status", [
+      z.object({ status: z.literal("available") }),
+      z.object({ status: z.literal("occupied"), until: z.iso.datetime({ offset: true }) }),
+    ])
+    .parse(req.body);
+  if (b.status === "occupied") {
+    const until = new Date(b.until).getTime();
+    if (until <= Date.now()) throw badRequest("Choose a check-out time in the future", [{ path: "until", message: "Must be in the future" }]);
+    if (until > Date.now() + 366 * 86_400_000) throw badRequest("Choose a check-out within a year, or pause the listing instead", [{ path: "until", message: "Within a year" }]);
+  }
+  await db().query(`update listings set occupancy = $2, occupied_until = $3, updated_at = now() where id = $1`, [l.id, b.status, b.status === "occupied" ? b.until : null]);
+  const row = await loadListing(l.id);
+  res.json({ listing: listingCard(row!) });
 });
 
 listingsRouter.put("/:id/blocks", requireAuth, async (req, res) => {

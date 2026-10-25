@@ -7,7 +7,8 @@ import { requireAuth } from "../middleware/auth.js";
 import { paymentDriver, publicPayment, settle, startPayment, type PaymentRow } from "../services/payments.js";
 import { getSettings } from "../services/settings.js";
 import { badRequest, conflict, notFound } from "../utils/http.js";
-import { daraja, parseCallback } from "../utils/mpesa.js";
+import { daraja, parseB2cResult, parseCallback } from "../utils/mpesa.js";
+import { handleB2cResult } from "../services/payouts.js";
 import { phoneField } from "./auth.routes.js";
 
 export const mpesaRouter = Router();
@@ -15,7 +16,6 @@ export const mpesaRouter = Router();
 // The amount is always worked out here from what is being paid for, never taken from the browser.
 const Push = z.discriminatedUnion("purpose", [
   z.object({ purpose: z.literal("BOOKING"), refId: z.uuid(), phone: phoneField }),
-  z.object({ purpose: z.literal("SUBSCRIPTION"), period: z.enum(["monthly", "annual"]), phone: phoneField }),
   z.object({ purpose: z.literal("AD_CAMPAIGN"), refId: z.uuid(), amount: z.coerce.number().int().min(100), phone: phoneField }),
 ]);
 
@@ -34,10 +34,6 @@ mpesaRouter.post("/stk-push", requireAuth, async (req, res) => {
     const inFlight = await one(db(), `select 1 from payments where purpose = 'BOOKING' and ref_id = $1 and status = 'PENDING' and created_at > now() - interval '90 seconds'`, [bk.id]);
     if (inFlight) throw conflict("A prompt was just sent. Check your phone.", "in_flight");
     return res.status(202).json(await startPayment({ userId, purpose: "BOOKING", refId: bk.id, phone: b.phone, amount: bk.due_now_kes, accountRef: bk.ref, description: "Booking" }));
-  }
-  if (b.purpose === "SUBSCRIPTION") {
-    const amount = b.period === "annual" ? s.premium_annual_kes : s.premium_monthly_kes;
-    return res.status(202).json(await startPayment({ userId, purpose: "SUBSCRIPTION", refId: null, phone: b.phone, amount, accountRef: "KNMEMBER", description: "Membership", meta: { period: b.period } }));
   }
   const ad = await one<{ id: string; owner_id: string; budget_kes: number; status: string }>(db(), `select id, owner_id, budget_kes, status from ads where id = $1`, [b.refId]);
   if (!ad || ad.owner_id !== userId) throw notFound("Campaign not found");
@@ -88,4 +84,21 @@ mpesaRouter.post("/callback/:token", async (req, res) => {
   } catch (e) {
     console.error("[mpesa] settle failed", e);
   }
+});
+
+/** Safaricom's answer to a payout (B2C). Same secret path as the STK callback. */
+mpesaRouter.post("/b2c/result/:token", async (req, res) => {
+  res.json({ ResultCode: 0, ResultDesc: "Accepted" });
+  if (!tokenOk(String(req.params.token))) return console.warn(`[mpesa] b2c result with a wrong token from ${req.ip}`);
+  const r = parseB2cResult(req.body);
+  if (!r) return console.warn("[mpesa] unreadable b2c result");
+  await handleB2cResult(r).catch((e) => console.error("[mpesa] b2c result", e));
+});
+
+/** The payout sat in Safaricom's queue too long and wasn't processed; it will be retried. */
+mpesaRouter.post("/b2c/timeout/:token", async (req, res) => {
+  res.json({ ResultCode: 0, ResultDesc: "Accepted" });
+  if (!tokenOk(String(req.params.token))) return;
+  const r = parseB2cResult(req.body);
+  if (r) await handleB2cResult({ ...r, resultCode: r.resultCode && r.resultCode !== "0" ? r.resultCode : "timeout", resultDesc: r.resultDesc || "Timed out in the M-Pesa queue" }).catch(() => {});
 });

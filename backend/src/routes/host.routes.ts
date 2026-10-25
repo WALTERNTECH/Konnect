@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { db, many, one } from "../config/db.js";
 import { requireAuth } from "../middleware/auth.js";
-import { ACTIVE_BOOKING } from "../services/availability.js";
+import { ACTIVE_BOOKING, BOOKED_UNTIL } from "../services/availability.js";
 import { listingCard } from "../services/views.js";
 import { notFound } from "../utils/http.js";
 import { addDays } from "../utils/kenya.js";
@@ -19,7 +19,7 @@ hostRouter.get("/overview", async (req, res) => {
     db(),
     `select
        (select coalesce(sum(amount_kes), 0) from payouts where host_id = $1 and status = 'PAID')::int as paid,
-       (select coalesce(sum(amount_kes), 0) from payouts where host_id = $1 and status = 'SCHEDULED')::int as scheduled,
+       (select coalesce(sum(amount_kes), 0) from payouts where host_id = $1 and status in ('QUEUED','SENDING','FAILED'))::int as scheduled,
        (select coalesce(sum(amount_kes), 0) from payouts where host_id = $1 and status = 'HELD')::int as held,
        (select count(*) from bookings where host_id = $1 and status = 'CONFIRMED')::int as upcoming,
        (select count(*) from bookings where host_id = $1 and status = 'COMPLETED')::int as completed,
@@ -46,7 +46,7 @@ hostRouter.get("/overview", async (req, res) => {
 hostRouter.get("/listings", async (req, res) => {
   const rows = await many(
     db(),
-    `select l.*, (select count(*) from bookings b where b.listing_id = l.id and b.status in ('CONFIRMED','COMPLETED'))::int as booking_count
+    `select l.*, ${BOOKED_UNTIL}, (select count(*) from bookings b where b.listing_id = l.id and b.status in ('CONFIRMED','COMPLETED'))::int as booking_count
        from listings l where l.host_id = $1 order by l.created_at desc`,
     [req.user!.id],
   );
@@ -72,8 +72,8 @@ hostRouter.get("/bookings", async (req, res) => {
 hostRouter.get("/payouts", async (req, res) => {
   const rows = await many(
     db(),
-    `select p.id, p.amount_kes, p.status, p.due_at, p.paid_at, p.reference, p.phone, b.ref as booking_ref, l.title
-       from payouts p join bookings b on b.id = p.booking_id join listings l on l.id = b.listing_id where p.host_id = $1 order by p.due_at desc limit 200`,
+    `select p.id, p.amount_kes, p.gross_kes, p.commission_kes, p.status, p.created_at, p.paid_at, p.reference, p.phone, b.ref as booking_ref, l.title
+       from payouts p join bookings b on b.id = p.booking_id join listings l on l.id = b.listing_id where p.host_id = $1 order by p.created_at desc limit 200`,
     [req.user!.id],
   );
   res.json({ items: rows });

@@ -133,12 +133,12 @@ export default function Home() {
                 <ShieldCheck /> Block, report, meetup sharing and SOS in every conversation
               </div>
               <div>
-                <Lock /> Visible to members only
+                <Lock /> Phone numbers and emails are never shown
               </div>
             </div>
             <div className="row g-12 wrap">
-              <LinkButton to={me?.premium.active ? "/connect" : "/membership"} variant="primary" size="lg">
-                {me?.premium.active ? "Open Connect" : "Membership · KES 999 a month"}
+              <LinkButton to="/connect" variant="primary" size="lg">
+                Open Connect
               </LinkButton>
             </div>
           </div>
@@ -158,7 +158,7 @@ export default function Home() {
           <div style={{ maxWidth: 620 }}>
             <div className="eyebrow">Hosting</div>
             <h2 className="display d-3 mt-8">List a stay or a practice</h2>
-            <p className="lede mt-12">Guests pay by M-Pesa when they book. Your payout is sent to your M-Pesa within 24 hours of check-in or the appointment.</p>
+            <p className="lede mt-12">Guests pay by M-Pesa when they book. As soon as the payment clears, 85% goes to your M-Pesa number; Konnect keeps 15%.</p>
           </div>
           <LinkButton to="/host" variant="ink" size="lg">
             Start hosting

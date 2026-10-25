@@ -97,7 +97,7 @@ export function Signup() {
   const [params] = useSearchParams();
   const next = safeNext(params.get("next"));
   const [step, setStep] = useState(0);
-  const [f, setF] = useState({ fullName: "", email: "", phone: "", password: "", day: "", month: "", year: "", gender: "", referralCode: params.get("ref") ?? "", agree: false });
+  const [f, setF] = useState({ fullName: "", email: "", phone: "", password: "", day: "", month: "", year: "", gender: "", payoutDifferent: false, payoutPhone: "", agree: false });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -111,6 +111,7 @@ export function Signup() {
       if (f.fullName.trim().length < 2) e.fullName = "Enter your full name";
       if (!/^\S+@\S+\.\S+$/.test(f.email.trim())) e.email = "Enter a valid email address";
       if (!/^0[17]\d{8}$/.test(f.phone)) e.phone = "Enter a Kenyan mobile number";
+      if (f.payoutDifferent && !/^0[17]\d{8}$/.test(f.payoutPhone)) e.payoutPhone = "Enter the M-Pesa number for payouts";
     }
     if (s === 1) {
       if (!dob) e.dateOfBirth = "Enter your date of birth";
@@ -138,13 +139,13 @@ export function Signup() {
     setBusy(true);
     setError(null);
     try {
-      const me = await signup({ fullName: f.fullName.trim(), email: f.email.trim(), phone: f.phone, password: f.password, dateOfBirth: dob, gender: f.gender, referralCode: f.referralCode || undefined });
+      const me = await signup({ fullName: f.fullName.trim(), email: f.email.trim(), phone: f.phone, password: f.password, dateOfBirth: dob, gender: f.gender, payoutPhone: f.payoutDifferent ? f.payoutPhone : undefined });
       nav(me.phoneVerificationRequired && !me.phoneVerified ? `/verify-phone?next=${encodeURIComponent(next)}` : next, { replace: true });
     } catch (err) {
       const fe = fieldErrors(err);
       setErrors(fe);
       setError(errorMessage(err));
-      if (fe.email || fe.phone || fe.fullName) setStep(0);
+      if (fe.email || fe.phone || fe.fullName || fe.payoutPhone) setStep(0);
       else if (fe.dateOfBirth || fe.gender) setStep(1);
     } finally {
       setBusy(false);
@@ -164,6 +165,16 @@ export function Signup() {
             <Input label="Full name" value={f.fullName} onChange={(e) => set("fullName")(e.target.value)} autoComplete="name" error={errors.fullName} autoFocus />
             <Input label="Email" type="email" value={f.email} onChange={(e) => set("email")(e.target.value)} autoComplete="email" error={errors.email} />
             <PhoneInput label="Phone number" value={f.phone} onChange={set("phone")} error={errors.phone} hint="Used for M-Pesa and sign-in codes." />
+            <div className="inset stack g-12">
+              <div className="stack g-4">
+                <span className="small strong">Payouts for hosts</span>
+                <span className="small muted">If you list a stay, 85% of each booking is sent to this M-Pesa number when the guest pays.</span>
+              </div>
+              <label className="check small">
+                <input type="checkbox" checked={f.payoutDifferent} onChange={(e) => set("payoutDifferent")(e.target.checked)} /> Use a different number for payouts
+              </label>
+              {f.payoutDifferent && <PhoneInput label="M-Pesa number for payouts" value={f.payoutPhone} onChange={set("payoutPhone")} error={errors.payoutPhone} />}
+            </div>
           </>
         )}
         {step === 1 && (
@@ -214,7 +225,6 @@ export function Signup() {
         {step === 2 && (
           <>
             <PasswordInput label="Password" value={f.password} onChange={set("password")} error={errors.password} autoComplete="new-password" hint="At least 8 characters." />
-            <Input label="Referral code (optional)" value={f.referralCode} onChange={(e) => set("referralCode")(e.target.value.toUpperCase())} error={errors.referralCode} />
             <label className="check small" style={{ alignItems: "flex-start" }}>
               <input type="checkbox" checked={f.agree} onChange={(e) => set("agree")(e.target.checked)} style={{ marginTop: 2 }} />
               <span>

@@ -11,7 +11,7 @@ export type Meta = {
   amenities: string[];
   categories: string[];
   counts: { type: string; city: string; neighbourhood: string; n: number; min: number; max: number }[];
-  bookingFeeKes: number;
+  commissionPct: number;
   promotionWeekKes: number;
 };
 

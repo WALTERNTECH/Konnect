@@ -5,7 +5,7 @@ import { requireAuth, requireVerifiedPhone } from "../middleware/auth.js";
 import { openSlots, unavailableNights, type Hours } from "../services/availability.js";
 import { notify } from "../services/notify.js";
 import { paymentDriver } from "../services/payments.js";
-import { getSettings } from "../services/settings.js";
+import { getSettings, splitPayment } from "../services/settings.js";
 import { firstName } from "../services/views.js";
 import { badRequest, conflict, forbidden, notFound } from "../utils/http.js";
 import { daysBetween, todayEAT } from "../utils/kenya.js";
@@ -31,12 +31,14 @@ export type Quote = {
   kind: "STAY" | "WELLNESS";
   checkIn: string | null; checkOut: string | null; nights: number | null;
   startsAt: string | null; endsAt: string | null;
-  unitPrice: number; subtotal: number; fee: number; total: number;
+  unitPrice: number; subtotal: number; total: number;
   payMode: "full" | "deposit"; dueNow: number; payLater: number;
+  /** Konnect's share of what's paid now; the host gets dueNow - commission. */
+  commission: number; hostReceives: number;
 };
 
 /** Prices a request and checks it can be booked. Throws a 400/409 explaining what's wrong. */
-async function quote(q: Q, l: Record<string, any>, r: BookingReq, fee: number): Promise<Quote> {
+async function quote(q: Q, l: Record<string, any>, r: BookingReq, commissionPct: number): Promise<Quote> {
   if (l.type === "STAY") {
     if (!r.checkIn || !r.checkOut) throw badRequest("Choose check-in and check-out dates");
     if (r.checkIn < todayEAT()) throw badRequest("Check-in can't be in the past");
@@ -48,7 +50,11 @@ async function quote(q: Q, l: Record<string, any>, r: BookingReq, fee: number): 
     const taken = await unavailableNights(q, l.id, r.checkIn, r.checkOut);
     if (taken.length) throw conflict("Some of those nights are no longer available", "dates_unavailable");
     const subtotal = l.price_kes * nights;
-    return { kind: "STAY", checkIn: r.checkIn, checkOut: r.checkOut, nights, startsAt: null, endsAt: null, unitPrice: l.price_kes, subtotal, fee, total: subtotal + fee, payMode: "full", dueNow: subtotal + fee, payLater: 0 };
+    const split = splitPayment(subtotal, commissionPct);
+    return {
+      kind: "STAY", checkIn: r.checkIn, checkOut: r.checkOut, nights, startsAt: null, endsAt: null, unitPrice: l.price_kes, subtotal, total: subtotal,
+      payMode: "full", dueNow: subtotal, payLater: 0, commission: split.commission, hostReceives: split.host,
+    };
   }
   if (!r.startsAt) throw badRequest("Choose a time");
   const mode = r.serviceMode ?? (l.service_modes.length === 1 ? l.service_modes[0] : undefined);
@@ -60,11 +66,12 @@ async function quote(q: Q, l: Record<string, any>, r: BookingReq, fee: number): 
   if (!slots.includes(start.toISOString())) throw conflict("That time is no longer available", "slot_unavailable");
   const subtotal = l.price_kes;
   const deposit = r.payMode === "deposit" && l.deposit_pct > 0 && l.deposit_pct < 100 ? Math.ceil((subtotal * l.deposit_pct) / 100) : subtotal;
+  const split = splitPayment(deposit, commissionPct);
   return {
     kind: "WELLNESS", checkIn: null, checkOut: null, nights: null,
     startsAt: start.toISOString(), endsAt: new Date(start.getTime() + l.duration_min * 60_000).toISOString(),
-    unitPrice: subtotal, subtotal, fee, total: subtotal + fee,
-    payMode: deposit < subtotal ? "deposit" : "full", dueNow: deposit + fee, payLater: subtotal - deposit,
+    unitPrice: subtotal, subtotal, total: subtotal,
+    payMode: deposit < subtotal ? "deposit" : "full", dueNow: deposit, payLater: subtotal - deposit, commission: split.commission, hostReceives: split.host,
   };
 }
 
@@ -79,17 +86,17 @@ async function bookable(id: string, userId: string) {
 bookingsRouter.post("/quote", requireAuth, async (req, res) => {
   const r = Req.parse(req.body);
   const l = await bookable(r.listingId, req.user!.id);
-  res.json({ quote: await quote(db(), l, r, (await getSettings()).booking_fee_kes) });
+  res.json({ quote: await quote(db(), l, r, (await getSettings()).commission_pct) });
 });
 
 bookingsRouter.post("/", requireAuth, requireVerifiedPhone, async (req, res) => {
   const r = Req.parse(req.body);
   const l = await bookable(r.listingId, req.user!.id);
-  const fee = (await getSettings()).booking_fee_kes; // outside the transaction: PGlite runs one at a time
+  const pct = (await getSettings()).commission_pct; // outside the transaction: PGlite runs one at a time
   const booking = await db().tx(async (q) => {
     // One booking at a time per host, so two people can't take the same nights or hour.
     await q.query(`select 1 from users where id = $1 for update`, [l.host_id]);
-    const qt = await quote(q, l, r, fee);
+    const qt = await quote(q, l, r, pct);
     return one<{ id: string; ref: string }>(
       q,
       `insert into bookings (ref, listing_id, user_id, host_id, kind, check_in, check_out, starts_at, ends_at, guests, service_mode, visit_address,
@@ -98,7 +105,7 @@ bookingsRouter.post("/", requireAuth, requireVerifiedPhone, async (req, res) => 
       [
         shortRef("KB", 5), l.id, req.user!.id, l.host_id, qt.kind, qt.checkIn, qt.checkOut, qt.startsAt, qt.endsAt, r.guests,
         qt.kind === "WELLNESS" ? (r.serviceMode ?? l.service_modes[0]) : null, r.serviceMode === "home" ? r.visitAddress : null,
-        qt.nights, qt.unitPrice, qt.subtotal, qt.fee, qt.total, qt.payMode, qt.dueNow, r.notes,
+        qt.nights, qt.unitPrice, qt.subtotal, qt.commission, qt.total, qt.payMode, qt.dueNow, r.notes,
       ],
     );
   });
@@ -111,9 +118,11 @@ export async function bookingView(id: string, viewerId: string) {
     `select b.*, l.title, l.photos, l.neighbourhood, l.city, l.type, l.check_in_time, l.check_out_time, l.duration_min, l.category, l.deposit_pct,
             g.full_name as guest_name, g.phone as guest_phone, h.full_name as host_name, h.phone as host_phone, h.photo_url as host_photo,
             p.status as payment_status, p.mpesa_receipt,
+            po.status as payout_status, po.amount_kes as payout_kes, po.reference as payout_reference, po.phone as payout_phone,
             exists (select 1 from reviews r where r.booking_id = b.id) as reviewed
        from bookings b join listings l on l.id = b.listing_id join users g on g.id = b.user_id join users h on h.id = b.host_id
        left join payments p on p.id = b.payment_id
+       left join payouts po on po.booking_id = b.id
       where b.id = $1`,
     [id],
   );
@@ -127,7 +136,12 @@ export async function bookingView(id: string, viewerId: string) {
     checkIn: b.check_in, checkOut: b.check_out, nights: b.nights, checkInTime: b.check_in_time, checkOutTime: b.check_out_time,
     startsAt: b.starts_at, endsAt: b.ends_at, guests: b.guests, serviceMode: b.service_mode,
     visitAddress: asHost && !confirmed ? null : b.visit_address,
-    price: { unit: b.unit_price_kes, subtotal: b.subtotal_kes, fee: b.platform_fee_kes, total: b.total_kes, dueNow: b.due_now_kes, payLater: b.total_kes - b.due_now_kes, payMode: b.pay_mode },
+    price: {
+      unit: b.unit_price_kes, subtotal: b.subtotal_kes, total: b.total_kes, dueNow: b.due_now_kes, payLater: b.total_kes - b.due_now_kes, payMode: b.pay_mode,
+      // The split is the host's business, not the guest's.
+      ...(asHost ? { commission: b.platform_fee_kes, hostReceives: b.due_now_kes - b.platform_fee_kes } : {}),
+    },
+    payout: asHost && b.payout_status ? { status: b.payout_status, amount: b.payout_kes, reference: b.payout_reference, phone: b.payout_phone } : null,
     notes: b.notes,
     holdUntil,
     receipt: b.mpesa_receipt,
@@ -154,7 +168,8 @@ bookingsRouter.get("/:id", requireAuth, async (req, res) => {
 /**
  * Guests can drop an unpaid booking at any time, and cancel a paid one up to 48 hours before
  * it starts; the refund is then queued for the finance team. Hosts can cancel a paid booking,
- * which always refunds the guest.
+ * which always refunds the guest. The host's share has usually been sent already, so the
+ * finance team recovers it from the host; an unsent share is held.
  */
 bookingsRouter.post("/:id/cancel", requireAuth, async (req, res) => {
   const { reason } = z.object({ reason: z.string().trim().max(300).default("") }).parse(req.body ?? {});
@@ -169,7 +184,7 @@ bookingsRouter.post("/:id/cancel", requireAuth, async (req, res) => {
   await db().tx(async (q) => {
     await q.query(`update bookings set status = 'CANCELLED', cancelled_at = now(), cancel_reason = $2 where id = $1`, [b.id, `${asHost ? "Host" : "Guest"}: ${reason}`.trim()]);
     if (b.status === "CONFIRMED") {
-      await q.query(`update payouts set status = 'HELD' where booking_id = $1 and status = 'SCHEDULED'`, [b.id]);
+      await q.query(`update payouts set status = 'HELD' where booking_id = $1 and status in ('QUEUED','FAILED')`, [b.id]);
       if (b.payment_id) await q.query(`update payments set meta = meta || '{"refund_needed": true}'::jsonb where id = $1`, [b.payment_id]);
     }
   });

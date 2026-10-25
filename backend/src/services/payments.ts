@@ -4,12 +4,13 @@ import { HttpError } from "../utils/http.js";
 import { daraja, describeResult, simulatedDriver, type MpesaDriver, type StkResult } from "../utils/mpesa.js";
 import { emit } from "./events.js";
 import { notify, type Notice } from "./notify.js";
+import { sendPayout } from "./payouts.js";
 import { getSettings, type Settings } from "./settings.js";
 
 // Payments are confirmed only by Safaricom's server-to-server result (or, with Daraja, our
 // own status query of the same prompt) — never by anything the browser says.
 
-export type Purpose = "BOOKING" | "SUBSCRIPTION" | "AD_CAMPAIGN" | "PROMOTION";
+export type Purpose = "BOOKING" | "AD_CAMPAIGN" | "PROMOTION";
 export type PaymentRow = {
   id: string;
   user_id: string;
@@ -98,6 +99,11 @@ export async function settle(r: StkResult, source: "callback" | "query" | "simul
   const s = settled as PaymentRow;
   emit(s.user_id, "payment", publicPayment(s));
   for (const a of after) await notify(a.userId, a.n).catch((e) => console.error("[pay] notify", e));
+  // The host's share leaves as soon as the guest's payment is confirmed.
+  if (s.status === "SUCCESS" && s.purpose === "BOOKING") {
+    const payout = await one<{ id: string }>(db(), `select id from payouts where booking_id = $1 and status = 'QUEUED'`, [s.ref_id]);
+    if (payout) await sendPayout(payout.id).catch((e) => console.error("[pay] payout", e));
+  }
 }
 
 export function publicPayment(p: PaymentRow) {
@@ -113,9 +119,7 @@ export function publicPayment(p: PaymentRow) {
   };
 }
 
-const days = (n: number) => n * 86_400_000;
-
-async function applySuccess(q: Q, p: PaymentRow, s: Settings): Promise<{ userId: string; n: Notice }[]> {
+async function applySuccess(q: Q, p: PaymentRow, _s: Settings): Promise<{ userId: string; n: Notice }[]> {
   switch (p.purpose) {
     case "BOOKING": {
       const b = await one<{
@@ -134,32 +138,17 @@ async function applySuccess(q: Q, p: PaymentRow, s: Settings): Promise<{ userId:
       }
       if (b.status !== "PENDING_PAYMENT" && b.status !== "EXPIRED") return [];
       await q.query(`update bookings set status = 'CONFIRMED', confirmed_at = now(), payment_id = $2 where id = $1`, [b.id, p.id]);
-      const host = await one<{ phone: string }>(q, `select phone from users where id = $1`, [b.host_id]);
-      const start = b.kind === "STAY" ? new Date(`${b.check_in}T14:00:00+03:00`) : new Date(b.starts_at!);
-      await q.query(`insert into payouts (host_id, booking_id, amount_kes, phone, due_at) values ($1, $2, $3, $4, $5) on conflict (booking_id) do nothing`, [
-        b.host_id, b.id, b.due_now_kes - b.platform_fee_kes, host!.phone, new Date(start.getTime() + s.payout_delay_hours * 3_600_000),
-      ]);
+      // Split what the guest paid: Konnect's commission was fixed when the booking was made.
+      const host = await one<{ phone: string; payout_phone: string | null }>(q, `select phone, payout_phone from users where id = $1`, [b.host_id]);
+      const share = b.due_now_kes - b.platform_fee_kes;
+      await q.query(
+        `insert into payouts (host_id, booking_id, gross_kes, commission_kes, amount_kes, phone) values ($1, $2, $3, $4, $5, $6) on conflict (booking_id) do nothing`,
+        [b.host_id, b.id, b.due_now_kes, b.platform_fee_kes, share, host!.payout_phone ?? host!.phone],
+      );
       return [
         { userId: b.user_id, n: { kind: "booking", title: "Booking confirmed", body: `${b.title} · ${b.ref}`, link: `/trips/${b.id}`, sms: `Konnect: ${b.title} is confirmed. Reference ${b.ref}. Receipt ${p.mpesa_receipt ?? ""}.` } },
-        { userId: b.host_id, n: { kind: "booking", title: "New booking", body: `${b.title} · ${b.ref}`, link: `/host/bookings`, sms: `Konnect: new booking ${b.ref} for ${b.title}.` } },
+        { userId: b.host_id, n: { kind: "booking", title: `New booking · KES ${share.toLocaleString("en-KE")} to your M-Pesa`, body: `${b.title} · ${b.ref}`, link: `/host/bookings`, sms: `Konnect: new booking ${b.ref} for ${b.title}. KES ${share.toLocaleString("en-KE")} is being sent to your M-Pesa.` } },
       ];
-    }
-    case "SUBSCRIPTION": {
-      const period = p.meta.period === "annual" ? "annual" : "monthly";
-      const until = await extendPremium(q, p.user_id, period === "annual" ? 365 : 30, { period, source: "mpesa", amount: p.amount_kes, paymentId: p.id });
-      const out: { userId: string; n: Notice }[] = [
-        { userId: p.user_id, n: { kind: "membership", title: "Membership active", body: `Until ${until.toLocaleDateString("en-KE", { day: "numeric", month: "long", year: "numeric", timeZone: "Africa/Nairobi" })}`, link: "/membership" } },
-      ];
-      // First paid membership from a referral: both people get the referral days.
-      const u = await one<{ referred_by: string | null; referral_rewarded_at: Date | null }>(q, `select referred_by, referral_rewarded_at from users where id = $1 for update`, [p.user_id]);
-      if (u?.referred_by && !u.referral_rewarded_at) {
-        await q.query(`update users set referral_rewarded_at = now() where id = $1`, [p.user_id]);
-        for (const id of [p.user_id, u.referred_by]) {
-          await extendPremium(q, id, s.referral_days, { period: "gift", source: "referral", amount: 0, paymentId: null });
-          out.push({ userId: id, n: { kind: "membership", title: `${s.referral_days} days of membership added`, body: "From your referral", link: "/membership" } });
-        }
-      }
-      return out;
     }
     case "AD_CAMPAIGN": {
       await q.query(
@@ -176,18 +165,6 @@ async function applySuccess(q: Q, p: PaymentRow, s: Settings): Promise<{ userId:
       return [{ userId: p.user_id, n: { kind: "listing", title: "Listing featured", body: `For ${weeks} week${weeks > 1 ? "s" : ""}`, link: "/host/listings" } }];
     }
   }
-}
-
-/** Adds days of membership after whatever is already paid for. Returns the new end. */
-export async function extendPremium(q: Q, userId: string, nDays: number, o: { period: string; source: string; amount: number; paymentId: string | null }): Promise<Date> {
-  const cur = await one<{ until: Date | null }>(q, `select max(expires_at) as until from subscriptions where user_id = $1 and status = 'ACTIVE' and expires_at > now()`, [userId]);
-  const start = cur?.until ? new Date(cur.until) : new Date();
-  const until = new Date(start.getTime() + days(nDays));
-  await q.query(
-    `insert into subscriptions (user_id, period, status, starts_at, expires_at, amount_kes, source, payment_id) values ($1, $2, 'ACTIVE', $3, $4, $5, $6, $7)`,
-    [userId, o.period, start, until, o.amount, o.source, o.paymentId],
-  );
-  return until;
 }
 
 /** Asks Daraja about prompts that have gone quiet, and gives up on ones nobody answered. */

@@ -26,6 +26,14 @@ export type Env = {
     till: string;
     /** Secret path segment on the callback URL; Daraja signs nothing. */
     callbackToken: string;
+    /** B2C, which sends hosts their share. Needs a B2C-enabled shortcode kept funded. */
+    b2c: {
+      shortcode: string;
+      initiator: string;
+      /** The initiator password encrypted with Safaricom's certificate (the Daraja portal generates it). */
+      securityCredential: string;
+      commandId: "BusinessPayment" | "SalaryPayment" | "PromotionPayment";
+    };
   };
   sms: { username: string; apiKey: string; senderId: string };
   cloudinaryUrl: string | null;
@@ -73,6 +81,12 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): Env {
       passkey: e.MPESA_PASSKEY ?? "",
       till: e.MPESA_TILL ?? "",
       callbackToken: e.MPESA_CALLBACK_TOKEN ?? (nodeEnv === "production" ? "" : "dev-callback"),
+      b2c: {
+        shortcode: e.MPESA_B2C_SHORTCODE ?? "",
+        initiator: e.MPESA_B2C_INITIATOR ?? "",
+        securityCredential: e.MPESA_B2C_SECURITY_CREDENTIAL ?? "",
+        commandId: (e.MPESA_B2C_COMMAND as Env["mpesa"]["b2c"]["commandId"]) || "BusinessPayment",
+      },
     },
     sms: { username: e.AT_USERNAME ?? "", apiKey: e.AT_API_KEY ?? "", senderId: e.AT_SENDER_ID ?? "" },
     cloudinaryUrl: e.CLOUDINARY_URL || null,

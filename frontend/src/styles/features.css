@@ -509,7 +509,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* ——— Feature split (Connect on home, membership) ——— */
+/* ——— Feature split (Connect on home) ——— */
 
 .feature {
   display: grid;
@@ -2060,4 +2060,27 @@
 .auth-card .brand-mark {
   width: 40px;
   height: 40px;
+}
+
+/* Stay occupancy */
+.avail {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 520;
+}
+.avail::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.avail.ok {
+  color: var(--ok);
+}
+.avail.busy {
+  color: var(--warn);
 }

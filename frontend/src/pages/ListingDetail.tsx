@@ -30,7 +30,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, errorCode, errorMessage, useApi } from "../api/client";
 import { Calendar } from "../components/Calendar";
 import { Gallery } from "../components/Gallery";
-import { useMeta } from "../components/SearchPanel";
+import { Availability } from "../components/ListingCard";
 import { PaymentSheet } from "../components/PaymentSheet";
 import { Avatar, BackLink, Button, Empty, Modal, Select, Skeleton, Textarea, Verified } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
@@ -135,6 +135,12 @@ function Detail({ data }: { data: Data }) {
               )}
             </div>
           </div>
+
+          {stay && l.availability && (
+            <div className={`notice ${l.availability.status === "available" ? "notice-ok" : "notice-warn"}`}>
+              <Availability a={l.availability} long />
+            </div>
+          )}
 
           <hr className="rule" />
 
@@ -279,7 +285,6 @@ function BookingPanel({ l }: { l: L }) {
   useEffect(() => setSlot(null), [day]);
 
   const nights = range.start && range.end ? daysBetween(range.start, range.end) : 0;
-  const fee = useMeta().data?.bookingFeeKes ?? 200;
   const subtotal = stay ? l.priceKes * nights : l.priceKes;
   const deposit = !stay && payMode === "deposit" && l.depositPct ? Math.ceil((l.priceKes * l.depositPct) / 100) : subtotal;
   const ready = stay ? nights > 0 : Boolean(slot) && (mode !== "home" || address.trim().length >= 6);
@@ -312,8 +317,6 @@ function BookingPanel({ l }: { l: L }) {
     <dl className="kv">
       <dt>{stay ? `${kes(l.priceKes)} × ${plural(nights, "night")}` : `${l.durationMin}-minute session`}</dt>
       <dd>{kes(subtotal)}</dd>
-      <dt>Booking fee</dt>
-      <dd>{kes(fee)}</dd>
       {!stay && deposit < subtotal && (
         <>
           <dt>Paid at the session</dt>
@@ -321,7 +324,7 @@ function BookingPanel({ l }: { l: L }) {
         </>
       )}
       <dt className="total">{!stay && deposit < subtotal ? "Due now" : "Total"}</dt>
-      <dd className="total">{kes(deposit + fee)}</dd>
+      <dd className="total">{kes(deposit)}</dd>
     </dl>
   );
 
@@ -422,7 +425,7 @@ function BookingPanel({ l }: { l: L }) {
             Clear dates
           </button>
           <Button variant="ink" onClick={() => setCalOpen(false)} disabled={!nights}>
-            {nights ? `Continue · ${kes(subtotal + fee)}` : "Continue"}
+            {nights ? `Continue · ${kes(subtotal)}` : "Continue"}
           </Button>
         </div>
       </Modal>

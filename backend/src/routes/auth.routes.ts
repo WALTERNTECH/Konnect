@@ -34,7 +34,8 @@ const Signup = z.object({
   password,
   dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Enter your date of birth"),
   gender: z.enum(["woman", "man", "nonbinary"]),
-  referralCode: z.string().trim().toUpperCase().optional().or(z.literal("").transform(() => undefined)),
+  /** Where a host's share of each booking is sent. Defaults to the phone above. */
+  payoutPhone: z.string().optional().or(z.literal("").transform(() => undefined)),
 });
 
 authRouter.post("/signup", strict, async (req, res) => {
@@ -44,14 +45,14 @@ authRouter.post("/signup", strict, async (req, res) => {
   if (age > 100) throw badRequest("Check your date of birth", [{ path: "dateOfBirth", message: "Check your date of birth" }]);
   const taken = await one<{ email: string; phone: string }>(db(), `select email, phone from users where email = $1 or phone = $2`, [b.email, b.phone]);
   if (taken) throw conflict(taken.email === b.email ? "An account already uses this email" : "An account already uses this phone number", "account_exists");
-  const referrer = b.referralCode ? await one<{ id: string }>(db(), `select id from users where referral_code = $1 and status = 'active'`, [b.referralCode]) : null;
-  if (b.referralCode && !referrer) throw badRequest("That referral code was not found", [{ path: "referralCode", message: "Code not found" }]);
+  const payoutPhone = b.payoutPhone ? normalizePhone(b.payoutPhone) : b.phone;
+  if (!payoutPhone) throw badRequest("Enter a Kenyan M-Pesa number for payouts", [{ path: "payoutPhone", message: "Enter a Kenyan M-Pesa number" }]);
 
   const user = await one<{ id: string; token_version: number }>(
     db(),
-    `insert into users (email, phone, password_hash, full_name, date_of_birth, gender, referral_code, referred_by)
+    `insert into users (email, phone, password_hash, full_name, date_of_birth, gender, referral_code, payout_phone)
      values ($1, $2, $3, $4, $5, $6, $7, $8) returning id, token_version`,
-    [b.email, b.phone, await hashPassword(b.password), b.fullName, b.dateOfBirth, b.gender, shortRef("K", 6), referrer?.id ?? null],
+    [b.email, b.phone, await hashPassword(b.password), b.fullName, b.dateOfBirth, b.gender, shortRef("K", 6), payoutPhone],
   );
   if (env.phoneVerification) await sendCode(b.phone, "verify").catch(() => {});
   res.status(201).json({ token: signUser(user!.id, user!.token_version), user: await meView(user!.id) });

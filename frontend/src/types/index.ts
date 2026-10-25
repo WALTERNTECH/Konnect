@@ -1,6 +1,6 @@
 // Shapes of the API's responses, mirrored from backend/src/services/views.ts and the routes.
 
-export type Badges = { phone: boolean; id: boolean; income: boolean; background: boolean; premium: boolean };
+export type Badges = { phone: boolean; id: boolean; income: boolean; background: boolean };
 
 export type Me = {
   id: string;
@@ -18,9 +18,8 @@ export type Me = {
   phoneVerified: boolean;
   phoneVerificationRequired: boolean;
   badges: Badges;
-  premium: { active: boolean; until: string | null; period: string | null };
-  referralCode: string;
-  referralCount: number;
+  /** Where a host's 85% of each booking is sent. */
+  payoutPhone: string;
   trustedContact: { name: string; phone: string } | null;
   prefs: { sms: boolean; matches: boolean; messages: boolean; reminders: boolean };
   isHost: boolean;
@@ -52,6 +51,8 @@ export type ListingCard = {
   featured: boolean;
   sample: boolean;
   status: string;
+  /** Stays only: free now, or occupied until a check-out time. */
+  availability: { status: "available" | "occupied"; until: string | null } | null;
 };
 
 export type ListingDetail = ListingCard & {
@@ -90,7 +91,8 @@ export type Booking = {
   guests: number;
   serviceMode: "home" | "studio" | null;
   visitAddress: string | null;
-  price: { unit: number; subtotal: number; fee: number; total: number; dueNow: number; payLater: number; payMode: "full" | "deposit" };
+  price: { unit: number; subtotal: number; total: number; dueNow: number; payLater: number; payMode: "full" | "deposit"; commission?: number; hostReceives?: number };
+  payout: { status: "QUEUED" | "SENDING" | "PAID" | "FAILED" | "HELD"; amount: number; reference: string | null; phone: string } | null;
   notes: string;
   holdUntil: string | null;
   receipt: string | null;

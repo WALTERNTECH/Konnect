@@ -9,6 +9,7 @@ import { badRequest, notFound } from "../utils/http.js";
 import { ageFrom, normalizePhone } from "../utils/kenya.js";
 import { MAX_UPLOAD_BYTES, storeImage } from "../utils/media.js";
 import { hashPassword, verifyPassword } from "../utils/security.js";
+import { sendSms } from "../utils/sms.js";
 
 export const usersRouter = Router();
 export const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_UPLOAD_BYTES, files: 10 } });
@@ -18,9 +19,6 @@ export async function meView(id: string) {
   const u = await one<Record<string, any>>(
     db(),
     `select u.*,
-            (select max(expires_at) from subscriptions s where s.user_id = u.id and s.status = 'ACTIVE' and s.expires_at > now()) as premium_until,
-            (select period from subscriptions s where s.user_id = u.id and s.status = 'ACTIVE' and s.expires_at > now() and s.source = 'mpesa' order by expires_at desc limit 1) as premium_period,
-            (select count(*) from users r where r.referred_by = u.id) as referral_count,
             exists (select 1 from listings l where l.host_id = u.id) as is_host,
             exists (select 1 from connect_profiles c where c.user_id = u.id) as has_connect,
             (select count(*) from notifications n where n.user_id = u.id and n.read_at is null) as unread_notifications,
@@ -46,9 +44,7 @@ export async function meView(id: string) {
     phoneVerified: Boolean(u.phone_verified_at),
     phoneVerificationRequired: env.phoneVerification,
     badges: badgesOf(u),
-    premium: { active: Boolean(u.premium_until), until: u.premium_until, period: u.premium_period },
-    referralCode: u.referral_code,
-    referralCount: Number(u.referral_count),
+    payoutPhone: u.payout_phone ?? u.phone,
     trustedContact: u.trusted_contact_phone ? { name: u.trusted_contact_name, phone: u.trusted_contact_phone } : null,
     prefs: { sms: u.prefs?.sms !== false, matches: u.prefs?.matches !== false, messages: u.prefs?.messages !== false, reminders: u.prefs?.reminders !== false, ...u.prefs },
     isHost: u.is_host,
@@ -112,6 +108,21 @@ usersRouter.post("/me/photo", requireAuth, upload.single("photo"), async (req, r
   if (!req.file) throw badRequest("Choose a photo to upload");
   const url = await storeImage(db(), req.user!.id, req.file, { maxEdge: 1200 });
   await db().query(`update users set photo_url = $2 where id = $1`, [req.user!.id, url]);
+  res.json({ user: await meView(req.user!.id) });
+});
+
+/**
+ * Where a host's 85% is sent. A wrong number here sends real money to a stranger, so it needs
+ * the password, and the account's phone is told.
+ */
+usersRouter.post("/me/payout-phone", requireAuth, async (req, res) => {
+  const b = z.object({ phone: z.string(), password: z.string().min(1, "Enter your password") }).parse(req.body);
+  const phone = normalizePhone(b.phone);
+  if (!phone) throw badRequest("Enter a Kenyan M-Pesa number", [{ path: "phone", message: "Enter a Kenyan M-Pesa number" }]);
+  const u = await one<{ password_hash: string; phone: string }>(db(), `select password_hash, phone from users where id = $1`, [req.user!.id]);
+  if (!(await verifyPassword(b.password, u!.password_hash))) throw badRequest("Your password is not right", [{ path: "password", message: "Not right" }]);
+  await db().query(`update users set payout_phone = $2 where id = $1`, [req.user!.id, phone]);
+  await sendSms(u!.phone, `Konnect: your payout number was changed to ${phone.replace(/^\+254/, "0")}. If this wasn't you, contact support now.`);
   res.json({ user: await meView(req.user!.id) });
 });
 

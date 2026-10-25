@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { AppLayout, RequireAuth } from "./components/Layout";
 import { Empty, LinkButton, Spinner } from "./components/ui";
 import { LiveEvents } from "./context/AuthContext";
@@ -12,7 +12,6 @@ import Home from "./pages/Home";
 import Host from "./pages/Host";
 import { Privacy, SafetyPage, Terms } from "./pages/Info";
 import ListingDetail from "./pages/ListingDetail";
-import Membership from "./pages/Membership";
 import Messages from "./pages/Messages";
 import { TripDetail, Trips } from "./pages/Trips";
 
@@ -56,7 +55,7 @@ export default function App() {
           <Route path="stays" element={<Browse key="stays" type="STAY" />} />
           <Route path="wellness" element={<Browse key="wellness" type="WELLNESS" />} />
           <Route path="listings/:id" element={<ListingDetail />} />
-          <Route path="membership" element={<Membership />} />
+          <Route path="membership" element={<Navigate to="/" replace />} />
           <Route path="connect" element={<Connect />} />
           <Route path="connect/:userId" element={<RequireAuth><ConnectProfileView /></RequireAuth>} />
           <Route path="messages" element={<RequireAuth><Messages /></RequireAuth>} />

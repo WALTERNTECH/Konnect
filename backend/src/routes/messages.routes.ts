@@ -1,17 +1,17 @@
 import { Router } from "express";
 import { z } from "zod";
 import { db, many, one } from "../config/db.js";
-import { requireAuth, requirePremium } from "../middleware/auth.js";
+import { requireAuth } from "../middleware/auth.js";
 import { emit, isOnline } from "../services/events.js";
 import { notify } from "../services/notify.js";
 import { firstName } from "../services/views.js";
 import { forbidden, notFound } from "../utils/http.js";
 import { threads } from "./connect.routes.js";
 
-// Chat between two members who like each other. Both need an active membership.
+// Chat between two members who like each other.
 
 export const messagesRouter = Router();
-messagesRouter.use(requireAuth, requirePremium);
+messagesRouter.use(requireAuth);
 
 async function matchFor(matchId: string, userId: string) {
   if (!z.uuid().safeParse(matchId).success) throw notFound("Conversation not found");

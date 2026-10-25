@@ -395,3 +395,37 @@ begin
 end $$;
 `,
 });
+
+// No membership: bookings are split 15% to Konnect and 85% to the host's payout number,
+// sent by M-Pesa B2C as soon as the guest's payment is confirmed. Hosts can also mark a
+// stay occupied until a check-out time.
+MIGRATIONS.push({
+  id: "003_split_payouts_occupancy",
+  sql: `
+alter table users add column payout_phone text;
+update users set payout_phone = phone where payout_phone is null and phone like '+254%';
+
+alter table listings add column occupancy text not null default 'available' check (occupancy in ('available','occupied'));
+alter table listings add column occupied_until timestamptz;
+
+alter table payouts drop constraint payouts_status_check;
+update payouts set status = 'QUEUED' where status = 'SCHEDULED';
+alter table payouts add constraint payouts_status_check check (status in ('QUEUED','SENDING','PAID','FAILED','HELD'));
+alter table payouts alter column status set default 'QUEUED';
+alter table payouts alter column due_at set default now();
+alter table payouts add column gross_kes integer;
+alter table payouts add column commission_kes integer;
+alter table payouts add column conversation_id text;
+alter table payouts add column attempts integer not null default 0;
+alter table payouts add column last_error text;
+alter table payouts add column sent_at timestamptz;
+create index payouts_conversation on payouts(conversation_id);
+create index payouts_status on payouts(status, created_at);
+
+-- The house placement used to point at membership.
+update ads set headline = 'Host on Konnect', ad_text = 'List your apartment or villa. When a guest pays, 85% goes straight to your M-Pesa.',
+       cta_label = 'Start hosting', target_url = '/host'
+ where is_house and target_url = '/membership';
+delete from settings where key in ('premium_monthly_kes','premium_annual_kes','booking_fee_kes','referral_days','payout_delay_hours');
+`,
+});

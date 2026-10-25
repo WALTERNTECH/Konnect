@@ -155,14 +155,69 @@ function Profile() {
           <dd>{fmtDate(me!.createdAt)}</dd>
         </dl>
       </Section>
+      <PayoutNumber />
     </>
+  );
+}
+
+/** Where a host's 85% is sent. Changing it needs the password, and the account phone is told. */
+function PayoutNumber() {
+  const { me, setMe } = useAuth();
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const [phone, setPhone] = useState("");
+  const [password, setPassword] = useState("");
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    setErrors({});
+    try {
+      const r = await api.post<{ user: Me }>("/users/me/payout-phone", { phone, password });
+      setMe(r.data.user);
+      setOpen(false);
+      toast("Payout number changed", "ok");
+    } catch (e) {
+      setErrors(fieldErrors(e));
+      toast(errorMessage(e), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Section title="Payout number" sub="When a guest pays for one of your listings, 85% is sent to this M-Pesa number straight away. Konnect keeps 15%.">
+      <div className="row between wrap g-12">
+        <span className="h-2 num">{me!.payoutPhone.replace(/^\+254/, "0")}</span>
+        <Button
+          size="sm"
+          onClick={() => {
+            setPhone("");
+            setPassword("");
+            setErrors({});
+            setOpen(true);
+          }}
+        >
+          Change
+        </Button>
+      </div>
+      <Modal open={open} onClose={() => setOpen(false)} title="Change payout number">
+        <div className="stack g-16">
+          <PhoneInput label="New M-Pesa number" value={phone} onChange={setPhone} error={errors.phone} autoFocus />
+          <Input label="Your password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} error={errors.password} autoComplete="current-password" />
+          <p className="small muted">We'll text your account phone to let you know it changed.</p>
+          <Button variant="primary" block loading={busy} disabled={!/^0[17]\d{8}$/.test(phone) || !password} onClick={save}>
+            Save
+          </Button>
+        </div>
+      </Modal>
+    </Section>
   );
 }
 
 function ConnectSection() {
   const { me } = useAuth();
   return (
-    <Section title="Connect profile" sub={me?.premium.active ? "What other members see in Connect." : "You can set this up now; it's shown to members once you have a membership."}>
+    <Section title="Connect profile" sub="What other members see in Connect.">
       <ConnectProfileEditor />
     </Section>
   );
@@ -349,7 +404,7 @@ function Notifications() {
     ["sms", "Text messages", "Booking confirmations, reminders and payouts by SMS."],
     ["messages", "New messages", "An alert when a match writes to you while you're away."],
     ["matches", "New matches", "An alert when someone you liked likes you back."],
-    ["reminders", "Reminders", "Appointment reminders and membership renewal notices."],
+    ["reminders", "Reminders", "Appointment reminders."],
   ];
   return (
     <Section title="Notifications">

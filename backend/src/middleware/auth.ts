@@ -14,7 +14,6 @@ export type AuthUser = {
   status: string;
   token_version: number;
   phone_verified_at: Date | null;
-  premium_until: Date | null;
   last_seen_at: Date;
 };
 export type AuthAdmin = { id: string; email: string; name: string; role: "owner" | "admin" | "moderator" | "finance" };
@@ -39,8 +38,7 @@ const bearer = (req: Request) => {
 export async function loadUser(id: string): Promise<AuthUser | null> {
   return one<AuthUser>(
     db(),
-    `select u.id, u.full_name, u.email, u.phone, u.gender, u.date_of_birth, u.status, u.token_version, u.phone_verified_at, u.last_seen_at,
-            (select max(s.expires_at) from subscriptions s where s.user_id = u.id and s.status = 'ACTIVE' and s.expires_at > now()) as premium_until
+    `select u.id, u.full_name, u.email, u.phone, u.gender, u.date_of_birth, u.status, u.token_version, u.phone_verified_at, u.last_seen_at
        from users u where u.id = $1`,
     [id],
   );
@@ -69,13 +67,6 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
 /** Attaches the user when a valid token is present; never rejects. */
 export async function optionalAuth(req: Request, _res: Response, next: NextFunction) {
   req.user = (await resolve(req)) ?? undefined;
-  next();
-}
-
-export const isPremium = (u?: AuthUser | null) => Boolean(u?.premium_until && new Date(u.premium_until) > new Date());
-
-export function requirePremium(req: Request, _res: Response, next: NextFunction) {
-  if (!isPremium(req.user)) throw forbidden("Connect is part of Konnect Membership", "premium_required");
   next();
 }
 

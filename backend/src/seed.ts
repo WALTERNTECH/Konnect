@@ -89,8 +89,8 @@ export async function seedSamples(db: Db, log: (m: string) => void = () => {}) {
   await db.tx(async (q) => {
     const host = await one<{ id: string }>(
       q,
-      `insert into users (email, phone, password_hash, full_name, date_of_birth, gender, referral_code, is_sample, phone_verified_at, id_verified_at, bio)
-       values ('samples@konnect.invalid', '+254700000000', $1, 'Konnect Collection', '1990-01-01', 'nonbinary', 'KSAMPLE', true, now(), now(), $2) returning id`,
+      `insert into users (email, phone, payout_phone, password_hash, full_name, date_of_birth, gender, referral_code, is_sample, phone_verified_at, id_verified_at, bio)
+       values ('samples@konnect.invalid', '+254700000000', '+254700000000', $1, 'Konnect Collection', '1990-01-01', 'nonbinary', 'KSAMPLE', true, now(), now(), $2) returning id`,
       [await hashPassword(randomBytes(24).toString("hex")), "Sample listings that show how Konnect works. Real hosts and practitioners replace them."],
     );
     for (const [type, list] of [["STAY", STAYS], ["WELLNESS", WELLNESS]] as const) {
@@ -111,7 +111,7 @@ export async function seedSamples(db: Db, log: (m: string) => void = () => {}) {
     }
     await q.query(
       `insert into ads (advertiser, headline, ad_text, cta_label, target_url, is_house, status)
-       values ('Konnect', 'Konnect Membership', 'Connect with members, no partner placements, and priority for your listings.', 'View membership', '/membership', true, 'ACTIVE')`,
+       values ('Konnect', 'Host on Konnect', 'List your apartment or villa. When a guest pays, 85% goes straight to your M-Pesa.', 'Start hosting', '/host', true, 'ACTIVE')`,
     );
   });
   log(`seeded ${STAYS.length} sample stays and ${WELLNESS.length} sample wellness listings`);

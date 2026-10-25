@@ -41,7 +41,7 @@ export default function Advertise() {
           </Button>
         }
       >
-        Placements appear between listings and on the home page for people without a membership. {p && `${kes(p.cpmKes)} per 1,000 impressions or ${kes(p.cpcKes)} per click. Campaigns start from ${kes(p.minBudgetKes)}, paid by M-Pesa, and are reviewed before they run.`}
+        Placements appear between listings and on the home page. {p && `${kes(p.cpmKes)} per 1,000 impressions or ${kes(p.cpcKes)} per click. Campaigns start from ${kes(p.minBudgetKes)}, paid by M-Pesa, and are reviewed before they run.`}
       </PageHead>
       {loading ? (
         <Skeleton h={240} r={16} />

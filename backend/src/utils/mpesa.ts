@@ -172,3 +172,78 @@ export function describeResult(code: string, fallback: string): string {
       return fallback || "M-Pesa could not complete the payment";
   }
 }
+
+// ——— B2C: paying hosts their share ———
+
+export type B2cRequest = { originatorId: string; phone: string; amount: number; remarks: string; occasion: string };
+export type B2cAccepted = { conversationId: string; originatorId: string };
+export type B2cResult = { originatorId?: string; conversationId?: string; resultCode: string; resultDesc: string; receipt?: string; receiver?: string; amount?: number };
+
+export interface B2cDriver {
+  name: "daraja" | "simulated";
+  send(req: B2cRequest, urls: { result: string; timeout: string }): Promise<B2cAccepted>;
+}
+
+export const b2cConfigured = () => Boolean(env.mpesa.b2c.shortcode && env.mpesa.b2c.initiator && env.mpesa.b2c.securityCredential && env.mpesa.consumerKey);
+
+export const darajaB2c: B2cDriver = {
+  name: "daraja",
+  async send(req, urls) {
+    const { shortcode, initiator, securityCredential, commandId } = env.mpesa.b2c;
+    const j = await darajaPost<{ ConversationID: string; OriginatorConversationID: string; ResponseCode: string; ResponseDescription: string }>("/mpesa/b2c/v3/paymentrequest", {
+      OriginatorConversationID: req.originatorId,
+      InitiatorName: initiator,
+      SecurityCredential: securityCredential,
+      CommandID: commandId,
+      Amount: Math.round(req.amount),
+      PartyA: shortcode,
+      PartyB: darajaPhone(req.phone),
+      Remarks: req.remarks.slice(0, 100),
+      QueueTimeOutURL: urls.timeout,
+      ResultURL: urls.result,
+      Occassion: req.occasion.slice(0, 100),
+    });
+    if (j.ResponseCode !== "0") throw new Error(j.ResponseDescription || "M-Pesa did not accept the payout");
+    return { conversationId: j.ConversationID, originatorId: j.OriginatorConversationID || req.originatorId };
+  },
+};
+
+/** Pays every payout a few seconds later through the same result path Safaricom uses. */
+export function simulatedB2c(onResult: (r: B2cResult) => void, delayMs = 3000): B2cDriver {
+  return {
+    name: "simulated",
+    async send(req) {
+      const conversationId = `AG_SIM_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      setTimeout(() => {
+        onResult({
+          originatorId: req.originatorId,
+          conversationId,
+          resultCode: "0",
+          resultDesc: "The service request is processed successfully.",
+          receipt: `SIM${Math.random().toString(36).slice(2, 9).toUpperCase()}`,
+          amount: Math.round(req.amount),
+        });
+      }, delayMs).unref?.();
+      return { conversationId, originatorId: req.originatorId };
+    },
+  };
+}
+
+/** Reads Safaricom's B2C result (or queue time-out) body. */
+export function parseB2cResult(body: unknown): B2cResult | null {
+  const r = (body as { Result?: Record<string, unknown> })?.Result;
+  if (!r) return null;
+  const params = ((r.ResultParameters as { ResultParameter?: { Key: string; Value?: unknown }[] })?.ResultParameter ?? []).reduce<Record<string, unknown>>(
+    (acc, p) => ((acc[p.Key] = p.Value), acc),
+    {},
+  );
+  return {
+    originatorId: typeof r.OriginatorConversationID === "string" ? r.OriginatorConversationID : undefined,
+    conversationId: typeof r.ConversationID === "string" ? r.ConversationID : undefined,
+    resultCode: String(r.ResultCode ?? ""),
+    resultDesc: String(r.ResultDesc ?? ""),
+    receipt: typeof r.TransactionID === "string" && r.TransactionID ? r.TransactionID : params.TransactionReceipt != null ? String(params.TransactionReceipt) : undefined,
+    receiver: params.ReceiverPartyPublicName != null ? String(params.ReceiverPartyPublicName) : undefined,
+    amount: params.TransactionAmount != null ? Number(params.TransactionAmount) : undefined,
+  };
+}

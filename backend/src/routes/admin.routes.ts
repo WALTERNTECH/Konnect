@@ -7,7 +7,8 @@ import { db, many, one } from "../config/db.js";
 import { env } from "../config/env.js";
 import { requireAdmin, type AuthAdmin } from "../middleware/auth.js";
 import { notify } from "../services/notify.js";
-import { extendPremium, paymentDriver, reconcile } from "../services/payments.js";
+import { paymentDriver, reconcile } from "../services/payments.js";
+import { payoutDriver, sendPayout } from "../services/payouts.js";
 import { getSettings, setSettings, DEFAULTS } from "../services/settings.js";
 
 import { badRequest, conflict, forbidden, notFound, unauthorized } from "../utils/http.js";
@@ -103,7 +104,6 @@ adminRouter.get("/overview", any, async (_req, res) => {
   const revenue = await one<Record<string, number>>(
     db(),
     `select
-      coalesce(sum(amount_kes) filter (where purpose = 'SUBSCRIPTION'), 0)::int as subscriptions,
       coalesce(sum(amount_kes) filter (where purpose = 'AD_CAMPAIGN'), 0)::int as ads,
       coalesce(sum(amount_kes) filter (where purpose = 'PROMOTION'), 0)::int as promotions,
       coalesce(sum(amount_kes) filter (where created_at > now() - interval '1 day'), 0)::int as today,
@@ -111,23 +111,26 @@ adminRouter.get("/overview", any, async (_req, res) => {
       coalesce(sum(amount_kes), 0)::int as month
      from payments where status = 'SUCCESS' and created_at > now() - interval '30 days'`,
   );
-  const fees = await one<{ fees: number; gmv: number }>(
+  // Konnect keeps its commission from each booking payment; the rest is the hosts'.
+  const fees = await one<{ fees: number; gmv: number; paid_out: number }>(
     db(),
-    `select coalesce(sum(platform_fee_kes), 0)::int as fees, coalesce(sum(due_now_kes), 0)::int as gmv from bookings where status in ('CONFIRMED','COMPLETED') and confirmed_at > now() - interval '30 days'`,
+    `select coalesce(sum(platform_fee_kes), 0)::int as fees, coalesce(sum(due_now_kes), 0)::int as gmv,
+            (select coalesce(sum(amount_kes), 0) from payouts where status = 'PAID' and paid_at > now() - interval '30 days')::int as paid_out
+       from bookings where status in ('CONFIRMED','COMPLETED') and confirmed_at > now() - interval '30 days'`,
   );
   const counts = await one<Record<string, number>>(
     db(),
     `select
       (select count(*) from users where status = 'active' and not is_sample)::int as users,
       (select count(*) from users where created_at > now() - interval '7 days' and not is_sample)::int as signups_week,
-      (select count(distinct user_id) from subscriptions where status = 'ACTIVE' and expires_at > now())::int as members,
+      (select count(distinct host_id) from listings where status = 'APPROVED' and not is_sample)::int as hosts,
       (select count(*) from bookings where status in ('CONFIRMED','COMPLETED') and confirmed_at > now() - interval '30 days')::int as bookings_month,
       (select count(*) from listings where status = 'APPROVED')::int as live_listings,
       (select count(*) from ad_events where kind = 'impression' and created_at > now() - interval '7 days')::int as impressions_week,
       (select count(*) from listings where status = 'PENDING')::int as q_listings,
       (select count(*) from verifications where status = 'PENDING')::int as q_verifications,
       (select count(*) from reports where status = 'OPEN')::int as q_reports,
-      (select count(*) from payouts where status = 'SCHEDULED' and due_at <= now())::int as q_payouts,
+      (select count(*) from payouts where status in ('QUEUED','FAILED'))::int as q_payouts,
       (select count(*) from safety_events where kind = 'sos' and status = 'OPEN')::int as q_sos,
       (select count(*) from ads where status = 'PENDING_REVIEW')::int as q_ads,
       (select count(*) from payments where status = 'SUCCESS' and (meta->>'refund_needed')::boolean)::int as q_refunds`,
@@ -150,7 +153,7 @@ adminRouter.get("/overview", any, async (_req, res) => {
     db(),
     `select p.id, p.purpose, p.amount_kes, p.status, p.mpesa_receipt, p.created_at, u.full_name from payments p left join users u on u.id = p.user_id order by p.created_at desc limit 8`,
   );
-  res.json({ revenue: { ...revenue, bookingFees: fees!.fees, bookingVolume: fees!.gmv }, counts, series, neighbourhoods: hoods, recent, driver: paymentDriver() });
+  res.json({ revenue: { ...revenue, commission: fees!.fees, bookingVolume: fees!.gmv, paidOut: fees!.paid_out }, counts, series, neighbourhoods: hoods, recent, driver: paymentDriver(), payoutDriver: payoutDriver() });
 });
 
 // ——— Users ———
@@ -171,7 +174,6 @@ adminRouter.get("/users", any, async (req, res) => {
     db(),
     `select u.id, u.full_name, u.email, u.phone, u.gender, u.date_of_birth, u.city, u.status, u.created_at, u.last_seen_at, u.phone_verified_at, u.id_verified_at,
             u.income_verified_at, u.background_checked_at, count(*) over () as total,
-            (select max(expires_at) from subscriptions s where s.user_id = u.id and s.status = 'ACTIVE' and s.expires_at > now()) as premium_until,
             exists (select 1 from listings l where l.host_id = u.id) as is_host
        from users u where ${where.join(" and ")} order by u.created_at desc limit 50 offset ${(f.page - 1) * 50}`,
     vals,
@@ -182,20 +184,20 @@ adminRouter.get("/users", any, async (req, res) => {
 adminRouter.get("/users/:id", any, async (req, res) => {
   const u = await one<Record<string, any>>(
     db(),
-    `select u.*, (select max(expires_at) from subscriptions s where s.user_id = u.id and s.status = 'ACTIVE' and s.expires_at > now()) as premium_until from users u where u.id = $1`,
+    `select u.* from users u where u.id = $1`,
     [req.params.id],
   );
   if (!u) throw notFound("User not found");
   delete u.password_hash;
-  const [bookings, payments, reports, verifications, listings, subs] = await Promise.all([
+  const [bookings, payments, reports, verifications, listings, payouts] = await Promise.all([
     many(db(), `select b.id, b.ref, b.status, b.total_kes, b.created_at, l.title from bookings b join listings l on l.id = b.listing_id where b.user_id = $1 order by b.created_at desc limit 20`, [u.id]),
     many(db(), `select id, purpose, amount_kes, status, mpesa_receipt, created_at from payments where user_id = $1 order by created_at desc limit 20`, [u.id]),
     many(db(), `select r.id, r.reason, r.details, r.status, r.created_at, split_part(x.full_name, ' ', 1) as reporter from reports r join users x on x.id = r.reporter_id where r.target_user_id = $1 order by r.created_at desc`, [u.id]),
     many(db(), `select id, kind, status, created_at, reviewed_at from verifications where user_id = $1 order by created_at desc`, [u.id]),
     many(db(), `select id, title, type, status from listings where host_id = $1 order by created_at desc`, [u.id]),
-    many(db(), `select id, period, status, starts_at, expires_at, amount_kes, source from subscriptions where user_id = $1 order by created_at desc limit 20`, [u.id]),
+    many(db(), `select p.id, p.amount_kes, p.status, p.reference, p.created_at, b.ref from payouts p join bookings b on b.id = p.booking_id where p.host_id = $1 order by p.created_at desc limit 20`, [u.id]),
   ]);
-  res.json({ user: { ...u, age: ageFrom(u.date_of_birth) }, bookings, payments, reports, verifications, listings, subscriptions: subs });
+  res.json({ user: { ...u, age: ageFrom(u.date_of_birth) }, bookings, payments, reports, verifications, listings, payouts });
 });
 
 adminRouter.post("/users/:id/action", moderation, async (req, res) => {
@@ -204,7 +206,6 @@ adminRouter.post("/users/:id/action", moderation, async (req, res) => {
       z.object({ action: z.literal("suspend"), reason: z.string().trim().min(3).max(300) }),
       z.object({ action: z.literal("reactivate") }),
       z.object({ action: z.literal("verify_phone") }),
-      z.object({ action: z.literal("grant_premium"), days: z.coerce.number().int().min(1).max(365) }),
       z.object({ action: z.literal("revoke_badge"), badge: z.enum(["id", "income", "background"]) }),
       z.object({ action: z.literal("sign_out") }),
     ])
@@ -221,10 +222,6 @@ adminRouter.post("/users/:id/action", moderation, async (req, res) => {
       break;
     case "verify_phone":
       await db().query(`update users set phone_verified_at = coalesce(phone_verified_at, now()) where id = $1`, [u.id]);
-      break;
-    case "grant_premium":
-      await db().tx((q) => extendPremium(q, u.id, b.days, { period: "gift", source: "admin", amount: 0, paymentId: null }));
-      await notify(u.id, { kind: "membership", title: `${b.days} days of membership added`, link: "/membership" });
       break;
     case "revoke_badge":
       await db().query(`update users set ${{ id: "id_verified_at", income: "income_verified_at", background: "background_checked_at" }[b.badge]} = null where id = $1`, [u.id]);
@@ -301,7 +298,7 @@ adminRouter.post("/bookings/:id/cancel", moderation, async (req, res) => {
   if (!["PENDING_PAYMENT", "CONFIRMED"].includes(b.status)) throw conflict("This booking can't be cancelled");
   await db().tx(async (q) => {
     await q.query(`update bookings set status = 'CANCELLED', cancelled_at = now(), cancel_reason = $2 where id = $1`, [b.id, `Konnect: ${reason}`]);
-    await q.query(`update payouts set status = 'HELD' where booking_id = $1 and status = 'SCHEDULED'`, [b.id]);
+    await q.query(`update payouts set status = 'HELD' where booking_id = $1 and status in ('QUEUED','FAILED')`, [b.id]);
     if (b.payment_id) await q.query(`update payments set meta = meta || '{"refund_needed": true}'::jsonb where id = $1 and status = 'SUCCESS'`, [b.payment_id]);
   });
   for (const id of [b.user_id, b.host_id]) await notify(id, { kind: "booking", title: "Booking cancelled by Konnect", body: `${b.ref}: ${reason}` });
@@ -360,20 +357,21 @@ adminRouter.post("/payments/reconcile", finance, async (_req, res) => {
 });
 
 adminRouter.get("/payouts", finance, async (req, res) => {
-  const status = z.enum(["DUE", "SCHEDULED", "PAID", "HELD", "ALL"]).default("DUE").parse(req.query.status);
-  const where = { DUE: `p.status = 'SCHEDULED' and p.due_at <= now()`, SCHEDULED: `p.status = 'SCHEDULED'`, PAID: `p.status = 'PAID'`, HELD: `p.status = 'HELD'`, ALL: "true" }[status];
+  const status = z.enum(["ATTENTION", "SENDING", "PAID", "HELD", "ALL"]).default("ATTENTION").parse(req.query.status);
+  const where = { ATTENTION: `p.status in ('QUEUED','FAILED')`, SENDING: `p.status = 'SENDING'`, PAID: `p.status = 'PAID'`, HELD: `p.status = 'HELD'`, ALL: "true" }[status];
   const rows = await many(
     db(),
     `select p.*, b.ref as booking_ref, b.status as booking_status, l.title, u.full_name as host_name
        from payouts p join bookings b on b.id = p.booking_id join listings l on l.id = b.listing_id join users u on u.id = p.host_id
-      where ${where} order by p.due_at asc limit 300`,
+      where ${where} order by p.created_at desc limit 300`,
   );
-  res.json({ items: rows });
+  res.json({ items: rows, driver: payoutDriver() });
 });
 
 adminRouter.post("/payouts/:id/action", finance, async (req, res) => {
   const b = z
     .discriminatedUnion("action", [
+      z.object({ action: z.literal("send") }),
       z.object({ action: z.literal("paid"), reference: z.string().trim().min(3).max(40) }),
       z.object({ action: z.literal("hold") }),
       z.object({ action: z.literal("release") }),
@@ -381,12 +379,15 @@ adminRouter.post("/payouts/:id/action", finance, async (req, res) => {
     .parse(req.body);
   const p = await one<{ id: string; host_id: string; amount_kes: number; status: string }>(db(), `select id, host_id, amount_kes, status from payouts where id = $1`, [req.params.id]);
   if (!p) throw notFound("Payout not found");
-  if (b.action === "paid") {
+  if (b.action === "send") {
+    const r = await sendPayout(p.id);
+    if (!r.ok) throw conflict(r.error ?? "The payout could not be sent");
+  } else if (b.action === "paid") {
     if (p.status === "PAID") throw conflict("Already paid");
     await db().query(`update payouts set status = 'PAID', paid_at = now(), reference = $2 where id = $1`, [p.id, b.reference]);
     await notify(p.host_id, { kind: "payout", title: `Payout sent: KES ${p.amount_kes.toLocaleString("en-KE")}`, body: `M-Pesa ${b.reference}`, link: "/host/payouts", sms: `Konnect: KES ${p.amount_kes.toLocaleString("en-KE")} sent to your M-Pesa. Ref ${b.reference}.` });
   } else {
-    await db().query(`update payouts set status = $2 where id = $1 and status <> 'PAID'`, [p.id, b.action === "hold" ? "HELD" : "SCHEDULED"]);
+    await db().query(`update payouts set status = $2 where id = $1 and status <> 'PAID'`, [p.id, b.action === "hold" ? "HELD" : "QUEUED"]);
   }
   await audit(req, `payout.${b.action}`, "payout", p.id, b);
   res.json({ ok: true });
@@ -547,6 +548,7 @@ adminRouter.get("/settings", any, async (_req, res) => {
     defaults: DEFAULTS,
     integrations: {
       mpesa: { driver: paymentDriver(), env: env.mpesa.env, shortcode: env.mpesa.driver === "daraja" ? env.mpesa.shortcode : null, till: env.mpesa.till || null, callbackUrl: `${env.publicUrl}/api/mpesa/callback/••••` },
+      b2c: { driver: payoutDriver(), shortcode: env.mpesa.b2c.shortcode || null, resultUrl: `${env.publicUrl}/api/mpesa/b2c/result/••••` },
       sms: { configured: smsConfigured(), senderId: env.sms.senderId || null },
       cloudinary: { configured: Boolean(env.cloudinaryUrl) },
       phoneVerification: env.phoneVerification,
@@ -559,8 +561,7 @@ adminRouter.put("/settings", requireAdmin("admin"), async (req, res) => {
   const int = z.coerce.number().int().min(0).max(10_000_000);
   const b = z
     .object({
-      premium_monthly_kes: int, premium_annual_kes: int, booking_fee_kes: int, ad_cpm_kes: int, ad_cpc_kes: int, ad_min_budget_kes: int,
-      promotion_week_kes: int, payout_delay_hours: z.coerce.number().int().min(0).max(720), referral_days: z.coerce.number().int().min(0).max(365),
+      commission_pct: z.coerce.number().int().min(0).max(50), ad_cpm_kes: int, ad_cpc_kes: int, ad_min_budget_kes: int, promotion_week_kes: int,
       support_phone: z.string().trim().max(20), safety_phone: z.string().trim().max(20),
     })
     .partial()
