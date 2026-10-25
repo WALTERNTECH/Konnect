@@ -62,6 +62,7 @@ listingsRouter.get("/", optionalAuth, async (req, res) => {
   const vals: unknown[] = [];
   const p = (v: unknown) => (vals.push(v), `$${vals.length}`);
   if (f.type) where.push(`l.type = ${p(f.type)}`);
+  if (!(await getSettings()).wellness_open) where.push(`l.type <> 'WELLNESS'`);
   if (f.city) where.push(`l.city = ${p(f.city)}`);
   if (f.neighbourhood) where.push(`l.neighbourhood = ${p(f.neighbourhood)}`);
   if (f.q) where.push(`(l.title ilike ${p(`%${f.q}%`)} or l.neighbourhood ilike $${vals.length} or l.summary ilike $${vals.length})`);
@@ -120,6 +121,7 @@ listingsRouter.get("/:id", optionalAuth, async (req, res) => {
   const l = await loadListing(String(req.params.id));
   const mine = l && req.user?.id === l.host_id;
   if (!l || (l.status !== "APPROVED" && !mine)) throw notFound("Listing not found");
+  if (l.type === "WELLNESS" && !mine && !(await getSettings()).wellness_open) throw notFound("Listing not found");
   const host = await one<Record<string, unknown>>(
     db(),
     `select u.id, u.full_name, u.photo_url, u.bio, u.created_at, u.phone_verified_at, u.id_verified_at, u.background_checked_at,
@@ -227,6 +229,7 @@ const columns = (b: Partial<z.infer<typeof ListingBody>>) => ({
 
 listingsRouter.post("/", requireAuth, requireVerifiedPhone, async (req, res) => {
   const b = ListingBody.parse(req.body);
+  if (b.type === "WELLNESS" && !(await getSettings()).wellness_open) throw forbidden("Wellness listings are closed for now", "wellness_closed");
   checkKind(b, b.type);
   const cols = Object.entries(columns(b)).filter(([, v]) => v !== undefined);
   const row = await one<{ id: string }>(

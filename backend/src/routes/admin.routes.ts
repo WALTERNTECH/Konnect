@@ -1,17 +1,19 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { Router, type Request } from "express";
 import rateLimit from "express-rate-limit";
 import QRCode from "qrcode";
 import { z } from "zod";
 import { db, many, one } from "../config/db.js";
 import { env } from "../config/env.js";
-import { requireAdmin, type AuthAdmin } from "../middleware/auth.js";
+import { requireAdmin } from "../middleware/auth.js";
+import { BOOKED_UNTIL, occupancyOf } from "../services/availability.js";
+import { emit } from "../services/events.js";
 import { notify } from "../services/notify.js";
 import { paymentDriver, reconcile } from "../services/payments.js";
 import { payoutDriver, sendPayout } from "../services/payouts.js";
 import { getSettings, setSettings, DEFAULTS } from "../services/settings.js";
 
-import { badRequest, conflict, forbidden, notFound, unauthorized } from "../utils/http.js";
+import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized } from "../utils/http.js";
 import { ageFrom, normalizePhone } from "../utils/kenya.js";
 import { storeImage } from "../utils/media.js";
 import { smsConfigured, sendSms } from "../utils/sms.js";
@@ -26,9 +28,22 @@ async function audit(req: Request, action: string, targetType: string | null, ta
   await db().query(`insert into audit_log (admin_id, action, target_type, target_id, detail) values ($1, $2, $3, $4, $5)`, [req.admin?.id ?? null, action, targetType, targetId, JSON.stringify(detail)]);
 }
 
-// ——— Sign-in: password, then an authenticator code ———
+/// ——— Sign-in: one owner account, email and password ———
+//
+// The control centre has exactly one account. It's created once, on the first visit, with the
+// server's setup key; after that nothing can create another (the database refuses a second
+// row too). An authenticator app can be added in Security for a second step.
 
-/** The token handed out after the password step, good only for the authenticator step. */
+const MAX_FAILS = 8;
+const LOCK_MINUTES = 15;
+
+const tokenMatches = (given: string) => {
+  const want = Buffer.from(env.adminSetupToken ?? "");
+  const got = Buffer.from(given);
+  return Boolean(env.adminSetupToken) && want.length === got.length && timingSafeEqual(want, got);
+};
+
+/** The token handed out after the password step when an authenticator is on; good only for /totp. */
 async function preMfa(req: Request) {
   const h = req.headers.authorization;
   const claims = h?.startsWith("Bearer ") ? verifyToken<AdminClaims>(h.slice(7), "admin") : null;
@@ -42,11 +57,10 @@ async function preMfa(req: Request) {
   return a;
 }
 
-async function enrolment(adminId: string, email: string) {
-  const secret = newTotpSecret();
-  await db().query(`update admin_users set totp_secret = $2, totp_enabled = false where id = $1`, [adminId, encrypt(secret)]);
-  const uri = totpUri(secret, email);
-  return { secret, uri, qr: await QRCode.toDataURL(uri, { margin: 1, width: 220, color: { dark: "#16130F", light: "#FFFFFF" } }) };
+async function signedIn(req: Request, id: string, tokenVersion: number) {
+  await db().query(`update admin_users set failed_logins = 0, locked_until = null, last_login_at = now() where id = $1`, [id]);
+  await db().query(`insert into audit_log (admin_id, action, detail) values ($1, 'admin.sign_in', $2)`, [id, JSON.stringify({ ip: req.ip, ua: String(req.headers["user-agent"] ?? "").slice(0, 160) })]);
+  return signAdmin(id, tokenVersion, true);
 }
 
 adminRouter.get("/setup", async (_req, res) => {
@@ -54,49 +68,149 @@ adminRouter.get("/setup", async (_req, res) => {
   res.json({ needed: n!.n === 0, available: Boolean(env.adminSetupToken) });
 });
 
+const Password = z.string().min(10, "Use at least 10 characters").max(200);
+
 adminRouter.post("/setup", strict, async (req, res) => {
-  const b = z
-    .object({ token: z.string().min(1), name: z.string().trim().min(2).max(60), email: z.string().trim().toLowerCase().pipe(z.email()), password: z.string().min(12, "Use at least 12 characters") })
-    .parse(req.body);
-  const want = Buffer.from(env.adminSetupToken ?? "");
-  const got = Buffer.from(b.token);
-  if (!env.adminSetupToken || want.length !== got.length || !timingSafeEqual(want, got)) throw forbidden("The setup token is not right");
-  const a = await db().tx(async (q) => {
-    const n = await one<{ n: number }>(q, `select count(*)::int as n from admin_users`);
-    if (n!.n > 0) throw conflict("Setup is already complete");
-    return one<{ id: string; token_version: number }>(q, `insert into admin_users (email, name, role, password_hash) values ($1, $2, 'owner', $3) returning id, token_version`, [
-      b.email, b.name, await hashPassword(b.password),
-    ]);
-  });
-  res.status(201).json({ token: signAdmin(a!.id, a!.token_version, false), enrol: await enrolment(a!.id, b.email) });
+  const b = z.object({ token: z.string().min(1, "Enter the setup key"), email: z.string().trim().toLowerCase().pipe(z.email("Enter a valid email")), password: Password }).parse(req.body);
+  if (!tokenMatches(b.token)) throw forbidden("The setup key is not right");
+  let a: { id: string; token_version: number } | null = null;
+  try {
+    a = await db().tx(async (q) => {
+      const n = await one<{ n: number }>(q, `select count(*)::int as n from admin_users`);
+      if (n!.n > 0) throw conflict("The control centre already has its account", "setup_done");
+      return one<{ id: string; token_version: number }>(q, `insert into admin_users (email, name, role, password_hash) values ($1, 'Owner', 'owner', $2) returning id, token_version`, [
+        b.email, await hashPassword(b.password),
+      ]);
+    });
+  } catch (e) {
+    if ((e as { code?: string }).code === "23505") throw conflict("The control centre already has its account", "setup_done");
+    throw e;
+  }
+  req.admin = { id: a!.id, email: b.email, name: "Owner", role: "owner" };
+  await audit(req, "admin.setup", "admin", a!.id, { email: b.email });
+  res.status(201).json({ token: await signedIn(req, a!.id, a!.token_version) });
 });
 
 adminRouter.post("/login", strict, async (req, res) => {
-  const b = z.object({ email: z.string().trim().toLowerCase(), password: z.string().min(1) }).parse(req.body);
-  const a = await one<{ id: string; email: string; password_hash: string; token_version: number; totp_enabled: boolean }>(
+  const b = z.object({ email: z.string().trim().toLowerCase().min(3, "Enter your email"), password: z.string().min(1, "Enter your password") }).parse(req.body);
+  const a = await one<{ id: string; password_hash: string; token_version: number; totp_enabled: boolean; failed_logins: number; locked_until: Date | null }>(
     db(),
-    `select id, email, password_hash, token_version, totp_enabled from admin_users where email = $1`,
+    `select id, password_hash, token_version, totp_enabled, failed_logins, locked_until from admin_users where email = $1`,
     [b.email],
   );
-  if (!a || !(await verifyPassword(b.password, a.password_hash))) throw unauthorized("Those details don't match an admin account");
-  res.json({ token: signAdmin(a.id, a.token_version, false), enrol: a.totp_enabled ? null : await enrolment(a.id, a.email) });
+  if (a?.locked_until && new Date(a.locked_until) > new Date()) throw new HttpError(429, "locked", `Too many wrong passwords. Try again after ${new Date(a.locked_until).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Nairobi" })}.`);
+  if (!a || !(await verifyPassword(b.password, a.password_hash))) {
+    if (a) {
+      await db().query(
+        `update admin_users set failed_logins = failed_logins + 1,
+                locked_until = case when failed_logins + 1 >= ${MAX_FAILS} then now() + interval '${LOCK_MINUTES} minutes' else locked_until end
+          where id = $1`,
+        [a.id],
+      );
+      await db().query(`insert into audit_log (admin_id, action, detail) values ($1, 'admin.sign_in_failed', $2)`, [a.id, JSON.stringify({ ip: req.ip })]);
+    }
+    throw unauthorized("That email and password don't match");
+  }
+  if (a.totp_enabled) return res.json({ needsCode: true, token: signAdmin(a.id, a.token_version, false) });
+  res.json({ needsCode: false, token: await signedIn(req, a.id, a.token_version) });
 });
 
 adminRouter.post("/totp", strict, async (req, res) => {
   const { code } = z.object({ code: z.string().regex(/^\d{6}$/, "Enter the 6-digit code") }).parse(req.body);
   const a = await preMfa(req);
-  if (!a.totp_secret || !verifyTotp(decrypt(a.totp_secret), code)) throw badRequest("That code is not right", [{ path: "code", message: "Not right" }]);
-  await db().query(`update admin_users set totp_enabled = true, last_login_at = now() where id = $1`, [a.id]);
-  await db().query(`insert into audit_log (admin_id, action) values ($1, 'admin.sign_in')`, [a.id]);
-  res.json({ token: signAdmin(a.id, a.token_version, true) });
+  if (!a.totp_enabled || !a.totp_secret || !verifyTotp(decrypt(a.totp_secret), code)) throw badRequest("That code is not right", [{ path: "code", message: "Not right" }]);
+  res.json({ token: await signedIn(req, a.id, a.token_version) });
 });
 
-adminRouter.get("/me", requireAdmin(), (req, res) => res.json({ admin: req.admin }));
+/** Forgotten password: the setup key sets a new one, removes the authenticator and signs out everywhere. */
+adminRouter.post("/recover", strict, async (req, res) => {
+  const b = z.object({ token: z.string().min(1, "Enter the setup key"), password: Password }).parse(req.body);
+  if (!tokenMatches(b.token)) throw forbidden("The setup key is not right");
+  const a = await one<{ id: string; email: string; token_version: number }>(
+    db(),
+    `update admin_users set password_hash = $1, totp_enabled = false, totp_secret = null, failed_logins = 0, locked_until = null, token_version = token_version + 1
+      returning id, email, token_version`,
+    [await hashPassword(b.password)],
+  );
+  if (!a) throw notFound("The control centre has no account yet");
+  req.admin = { id: a.id, email: a.email, name: "Owner", role: "owner" };
+  await audit(req, "admin.recover", "admin", a.id);
+  res.json({ email: a.email, token: await signedIn(req, a.id, a.token_version) });
+});
 
-// Everything below needs a full admin session.
+adminRouter.get("/me", requireAdmin(), (req, res) => res.json({ admin: req.admin, siteUrl: env.publicUrl }));
+
+// Everything below needs a full session. There's one owner, so every route is open to them.
 const any = requireAdmin();
-const moderation = requireAdmin("admin", "moderator");
-const finance = requireAdmin("admin", "finance");
+const moderation = any;
+const finance = any;
+
+// ——— Security: the owner's own account ———
+
+adminRouter.get("/security", any, async (req, res) => {
+  const a = await one<{ email: string; totp_enabled: boolean; last_login_at: Date | null; created_at: Date }>(db(), `select email, totp_enabled, last_login_at, created_at from admin_users where id = $1`, [req.admin!.id]);
+  const signIns = await many(
+    db(),
+    `select action, detail, created_at from audit_log where admin_id = $1 and action in ('admin.sign_in','admin.sign_in_failed','admin.recover') order by created_at desc limit 15`,
+    [req.admin!.id],
+  );
+  res.json({ email: a!.email, totpEnabled: a!.totp_enabled, lastLoginAt: a!.last_login_at, createdAt: a!.created_at, signIns });
+});
+
+async function checkPassword(adminId: string, password: string) {
+  const a = await one<{ password_hash: string }>(db(), `select password_hash from admin_users where id = $1`, [adminId]);
+  if (!(await verifyPassword(password, a!.password_hash))) throw badRequest("Your password is not right", [{ path: "password", message: "Not right" }]);
+}
+
+adminRouter.post("/security/email", any, async (req, res) => {
+  const b = z.object({ email: z.string().trim().toLowerCase().pipe(z.email("Enter a valid email")), password: z.string().min(1) }).parse(req.body);
+  await checkPassword(req.admin!.id, b.password);
+  await db().query(`update admin_users set email = $2 where id = $1`, [req.admin!.id, b.email]);
+  await audit(req, "admin.email", "admin", req.admin!.id, { email: b.email });
+  res.json({ email: b.email });
+});
+
+adminRouter.post("/password", any, async (req, res) => {
+  const b = z.object({ current: z.string().min(1), next: Password }).parse(req.body);
+  await checkPassword(req.admin!.id, b.current);
+  const a = await one<{ token_version: number }>(db(), `update admin_users set password_hash = $2, token_version = token_version + 1 where id = $1 returning token_version`, [
+    req.admin!.id, await hashPassword(b.next),
+  ]);
+  await audit(req, "admin.password", "admin", req.admin!.id);
+  // Other devices are signed out; this one carries on.
+  res.json({ token: signAdmin(req.admin!.id, a!.token_version, true) });
+});
+
+adminRouter.post("/security/sign-out-everywhere", any, async (req, res) => {
+  const a = await one<{ token_version: number }>(db(), `update admin_users set token_version = token_version + 1 where id = $1 returning token_version`, [req.admin!.id]);
+  await audit(req, "admin.sign_out_everywhere", "admin", req.admin!.id);
+  res.json({ token: signAdmin(req.admin!.id, a!.token_version, true) });
+});
+
+adminRouter.post("/security/totp/start", any, async (req, res) => {
+  const secret = newTotpSecret();
+  await db().query(`update admin_users set totp_secret = $2 where id = $1 and not totp_enabled`, [req.admin!.id, encrypt(secret)]);
+  const uri = totpUri(secret, req.admin!.email);
+  res.json({ secret, qr: await QRCode.toDataURL(uri, { margin: 1, width: 220, color: { dark: "#16130F", light: "#FFFFFF" } }) });
+});
+
+adminRouter.post("/security/totp/confirm", any, async (req, res) => {
+  const { code } = z.object({ code: z.string().regex(/^\d{6}$/, "Enter the 6-digit code") }).parse(req.body);
+  const a = await one<{ totp_secret: string | null; totp_enabled: boolean }>(db(), `select totp_secret, totp_enabled from admin_users where id = $1`, [req.admin!.id]);
+  if (a!.totp_enabled) throw conflict("The authenticator is already on");
+  if (!a!.totp_secret || !verifyTotp(decrypt(a!.totp_secret), code)) throw badRequest("That code is not right", [{ path: "code", message: "Not right" }]);
+  await db().query(`update admin_users set totp_enabled = true where id = $1`, [req.admin!.id]);
+  await audit(req, "admin.totp_on", "admin", req.admin!.id);
+  res.json({ totpEnabled: true });
+});
+
+adminRouter.post("/security/totp/disable", any, async (req, res) => {
+  const { password } = z.object({ password: z.string().min(1) }).parse(req.body);
+  await checkPassword(req.admin!.id, password);
+  await db().query(`update admin_users set totp_enabled = false, totp_secret = null where id = $1`, [req.admin!.id]);
+  await audit(req, "admin.totp_off", "admin", req.admin!.id);
+  res.json({ totpEnabled: false });
+});
 
 // ——— Overview ———
 
@@ -159,7 +273,7 @@ adminRouter.get("/overview", any, async (_req, res) => {
 // ——— Users ———
 
 adminRouter.get("/users", any, async (req, res) => {
-  const f = z.object({ q: z.string().trim().max(80).optional(), status: z.enum(["active", "suspended", "deleted"]).optional(), page: z.coerce.number().int().min(1).default(1) }).parse(req.query);
+  const f = z.object({ q: z.string().trim().max(80).optional(), status: z.enum(["active", "suspended", "deleted"]).optional(), kind: z.enum(["hosts", "guests"]).optional(), page: z.coerce.number().int().min(1).default(1) }).parse(req.query);
   const vals: unknown[] = [];
   const where = [`not u.is_sample`];
   if (f.q) {
@@ -168,11 +282,12 @@ adminRouter.get("/users", any, async (req, res) => {
   }
   if (f.status) {
     vals.push(f.status);
-    where.push(`u.status = $${vals.length}`);
+    where.push(`u.status = ${vals.length}`);
   }
+  if (f.kind) where.push(`${f.kind === "hosts" ? "" : "not "}exists (select 1 from listings l where l.host_id = u.id)`);
   const rows = await many(
     db(),
-    `select u.id, u.full_name, u.email, u.phone, u.gender, u.date_of_birth, u.city, u.status, u.created_at, u.last_seen_at, u.phone_verified_at, u.id_verified_at,
+    `select u.id, u.full_name, u.email, u.phone, u.payout_phone, u.gender, u.date_of_birth, u.city, u.status, u.created_at, u.last_seen_at, u.phone_verified_at, u.id_verified_at,
             u.income_verified_at, u.background_checked_at, count(*) over () as total,
             exists (select 1 from listings l where l.host_id = u.id) as is_host
        from users u where ${where.join(" and ")} order by u.created_at desc limit 50 offset ${(f.page - 1) * 50}`,
@@ -238,11 +353,14 @@ adminRouter.post("/users/:id/action", moderation, async (req, res) => {
 
 adminRouter.get("/listings", any, async (req, res) => {
   const status = z.enum(["PENDING", "APPROVED", "REJECTED", "PAUSED", "DRAFT", "ALL"]).default("PENDING").parse(req.query.status);
+  const q = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 80) : "";
   const rows = await many(
     db(),
-    `select l.*, u.full_name as host_name, u.phone as host_phone, u.id_verified_at as host_id_verified
-       from listings l join users u on u.id = l.host_id where ($1 = 'ALL' or l.status = $1) order by l.updated_at desc limit 200`,
-    [status],
+    `select l.*, ${BOOKED_UNTIL}, u.full_name as host_name, u.phone as host_phone, u.id_verified_at as host_id_verified
+       from listings l join users u on u.id = l.host_id
+      where ($1 = 'ALL' or l.status = $1) and ($2 = '' or l.title ilike '%' || $2 || '%' or l.neighbourhood ilike '%' || $2 || '%' or u.full_name ilike '%' || $2 || '%')
+      order by l.updated_at desc limit 300`,
+    [status, q],
   );
   res.json({ items: rows });
 });
@@ -557,12 +675,14 @@ adminRouter.get("/settings", any, async (_req, res) => {
   });
 });
 
-adminRouter.put("/settings", requireAdmin("admin"), async (req, res) => {
+adminRouter.put("/settings", any, async (req, res) => {
   const int = z.coerce.number().int().min(0).max(10_000_000);
   const b = z
     .object({
       commission_pct: z.coerce.number().int().min(0).max(50), ad_cpm_kes: int, ad_cpc_kes: int, ad_min_budget_kes: int, promotion_week_kes: int,
       support_phone: z.string().trim().max(20), safety_phone: z.string().trim().max(20),
+      signups_open: z.boolean(), bookings_open: z.boolean(), connect_open: z.boolean(), wellness_open: z.boolean(),
+      site_banner: z.string().trim().max(200),
     })
     .partial()
     .parse(req.body);
@@ -578,49 +698,18 @@ adminRouter.put("/settings", requireAdmin("admin"), async (req, res) => {
   res.json({ settings: await getSettings() });
 });
 
-adminRouter.post("/sms/test", requireAdmin("admin"), async (req, res) => {
+adminRouter.post("/sms/test", any, async (req, res) => {
   const { phone } = z.object({ phone: z.string() }).parse(req.body);
   const p = normalizePhone(phone);
   if (!p) throw badRequest("Enter a Kenyan mobile number");
   res.json({ sent: await sendSms(p, "Konnect: this is a test message from the admin console.") });
 });
 
-adminRouter.get("/team", any, async (_req, res) => {
-  res.json({ items: await many(db(), `select id, email, name, role, totp_enabled, created_at, last_login_at from admin_users order by created_at`) });
-});
-
-adminRouter.post("/team", requireAdmin("owner" as AuthAdmin["role"]), async (req, res) => {
-  if (req.admin!.role !== "owner") throw forbidden("Only the owner can add admins");
-  const b = z.object({ email: z.string().trim().toLowerCase().pipe(z.email()), name: z.string().trim().min(2).max(60), role: z.enum(["admin", "moderator", "finance"]) }).parse(req.body);
-  const temp = `${Math.random().toString(36).slice(2, 8)}-${Math.random().toString(36).slice(2, 8)}-${Math.random().toString(36).slice(2, 6)}`;
-  const row = await one(db(), `insert into admin_users (email, name, role, password_hash) values ($1, $2, $3, $4) on conflict (email) do nothing returning id`, [b.email, b.name, b.role, await hashPassword(temp)]);
-  if (!row) throw conflict("That email already has an admin account");
-  await audit(req, "team.add", "admin", String(row.id), { email: b.email, role: b.role });
-  res.status(201).json({ temporaryPassword: temp });
-});
-
-adminRouter.delete("/team/:id", requireAdmin("owner" as AuthAdmin["role"]), async (req, res) => {
-  if (req.admin!.role !== "owner") throw forbidden("Only the owner can remove admins");
-  if (req.params.id === req.admin!.id) throw badRequest("You can't remove yourself");
-  await db().query(`delete from admin_users where id = $1 and role <> 'owner'`, [req.params.id]);
-  await audit(req, "team.remove", "admin", String(req.params.id));
-  res.json({ ok: true });
-});
-
-adminRouter.post("/password", any, async (req, res) => {
-  const b = z.object({ current: z.string().min(1), next: z.string().min(12, "Use at least 12 characters") }).parse(req.body);
-  const a = await one<{ password_hash: string }>(db(), `select password_hash from admin_users where id = $1`, [req.admin!.id]);
-  if (!(await verifyPassword(b.current, a!.password_hash))) throw badRequest("Your current password is not right");
-  await db().query(`update admin_users set password_hash = $2, token_version = token_version + 1 where id = $1`, [req.admin!.id, await hashPassword(b.next)]);
-  await audit(req, "admin.password", "admin", req.admin!.id);
-  res.json({ ok: true });
-});
-
 adminRouter.get("/audit", any, async (_req, res) => {
   res.json({ items: await many(db(), `select a.*, x.name as admin_name from audit_log a left join admin_users x on x.id = a.admin_id order by a.created_at desc limit 300`) });
 });
 
-adminRouter.post("/samples/remove", requireAdmin("admin"), async (req, res) => {
+adminRouter.post("/samples/remove", any, async (req, res) => {
   const r = await db().tx(async (q) => {
     const booked = await many<{ id: string }>(q, `select distinct l.id from listings l join bookings b on b.listing_id = l.id where l.is_sample`);
     await q.query(`update listings set status = 'PAUSED' where is_sample and id = any($1::uuid[])`, [booked.map((b) => b.id)]);
@@ -633,3 +722,257 @@ adminRouter.post("/samples/remove", requireAdmin("admin"), async (req, res) => {
   res.json(r);
 });
 
+
+// ——— Editing anything: users ———
+
+const phoneIn = (v: string, path: string) => {
+  const p = normalizePhone(v);
+  if (!p) throw badRequest("Enter a Kenyan mobile number", [{ path, message: "Enter a Kenyan mobile number" }]);
+  return p;
+};
+
+adminRouter.patch("/users/:id", any, async (req, res) => {
+  const b = z
+    .object({
+      fullName: z.string().trim().min(2).max(80),
+      email: z.string().trim().toLowerCase().pipe(z.email("Enter a valid email")),
+      phone: z.string(),
+      payoutPhone: z.string(),
+      city: z.string().trim().min(2).max(40),
+    })
+    .partial()
+    .parse(req.body);
+  const u = await one<Record<string, any>>(db(), `select id, full_name, email, phone, payout_phone, city from users where id = $1`, [req.params.id]);
+  if (!u) throw notFound("User not found");
+  const next: Record<string, unknown> = {};
+  if (b.fullName !== undefined) next.full_name = b.fullName;
+  if (b.city !== undefined) next.city = b.city;
+  if (b.email !== undefined && b.email !== u.email) {
+    if (await one(db(), `select 1 from users where email = $1 and id <> $2`, [b.email, u.id])) throw conflict("Another account uses that email");
+    next.email = b.email;
+  }
+  if (b.phone !== undefined) {
+    const p = phoneIn(b.phone, "phone");
+    if (p !== u.phone) {
+      if (await one(db(), `select 1 from users where phone = $1 and id <> $2`, [p, u.id])) throw conflict("Another account uses that phone number");
+      next.phone = p;
+    }
+  }
+  if (b.payoutPhone !== undefined) next.payout_phone = phoneIn(b.payoutPhone, "payoutPhone");
+  const cols = Object.keys(next);
+  if (cols.length) await db().query(`update users set ${cols.map((c, i) => `${c} = $${i + 2}`).join(", ")} where id = $1`, [u.id, ...Object.values(next)]);
+  await audit(req, "user.edit", "user", u.id, { before: Object.fromEntries(cols.map((c) => [c, u[c]])), after: next });
+  res.json({ ok: true });
+});
+
+/** Sets a temporary password, signs the person out everywhere, and shows the password once. */
+adminRouter.post("/users/:id/password", any, async (req, res) => {
+  const u = await one<{ id: string; phone: string }>(db(), `select id, phone from users where id = $1 and status <> 'deleted'`, [req.params.id]);
+  if (!u) throw notFound("User not found");
+  const temp = randomBytes(9).toString("base64url");
+  await db().query(`update users set password_hash = $2, token_version = token_version + 1 where id = $1`, [u.id, await hashPassword(temp)]);
+  await audit(req, "user.password_reset", "user", u.id);
+  res.json({ temporaryPassword: temp });
+});
+
+/** Closes an account the way the person closing it themselves would. Financial records stay. */
+adminRouter.delete("/users/:id", any, async (req, res) => {
+  const u = await one<{ id: string; full_name: string; email: string }>(db(), `select id, full_name, email from users where id = $1 and status <> 'deleted' and not is_sample`, [req.params.id]);
+  if (!u) throw notFound("User not found");
+  await db().tx(async (q) => {
+    await q.query(
+      `update users set status = 'deleted', email = 'deleted+' || id || '@konnect.invalid', phone = 'deleted:' || id, full_name = 'Former member',
+              bio = '', photo_url = null, trusted_contact_name = null, trusted_contact_phone = null, token_version = token_version + 1 where id = $1`,
+      [u.id],
+    );
+    await q.query(`delete from connect_profiles where user_id = $1`, [u.id]);
+    await q.query(`update listings set status = 'PAUSED' where host_id = $1 and status in ('APPROVED','PENDING')`, [u.id]);
+    await q.query(`update matches set status = 'ended' where user_a = $1 or user_b = $1`, [u.id]);
+  });
+  await audit(req, "user.close", "user", u.id, { name: u.full_name, email: u.email });
+  res.json({ ok: true });
+});
+
+// ——— Listings ———
+
+adminRouter.get("/listings/:id", any, async (req, res) => {
+  if (!z.uuid().safeParse(req.params.id).success) throw notFound("Listing not found");
+  const l = await one<Record<string, any>>(
+    db(),
+    `select l.*, ${BOOKED_UNTIL}, u.full_name as host_name, u.phone as host_phone, u.payout_phone as host_payout_phone, u.email as host_email,
+            (select count(*) from bookings b where b.listing_id = l.id and b.status in ('CONFIRMED','COMPLETED'))::int as booking_count,
+            (select coalesce(sum(b.due_now_kes), 0) from bookings b where b.listing_id = l.id and b.status in ('CONFIRMED','COMPLETED'))::int as paid_in
+       from listings l join users u on u.id = l.host_id where l.id = $1`,
+    [req.params.id],
+  );
+  if (!l) throw notFound("Listing not found");
+  res.json({ listing: { ...l, availability: l.type === "STAY" ? occupancyOf(l as never) : null } });
+});
+
+adminRouter.patch("/listings/:id", any, async (req, res) => {
+  const b = z
+    .object({
+      title: z.string().trim().min(6).max(80),
+      summary: z.string().trim().max(160),
+      description: z.string().trim().max(4000),
+      city: z.string().trim().min(2).max(40),
+      neighbourhood: z.string().trim().min(2).max(60),
+      priceKes: z.coerce.number().int().min(100).max(1_000_000),
+      minNights: z.coerce.number().int().min(1).max(60),
+      maxGuests: z.coerce.number().int().min(1).max(30),
+      bedrooms: z.coerce.number().int().min(0).max(20),
+      status: z.enum(["DRAFT", "PENDING", "APPROVED", "REJECTED", "PAUSED"]),
+    })
+    .partial()
+    .parse(req.body);
+  const map: Record<string, unknown> = {
+    title: b.title, summary: b.summary, description: b.description, city: b.city, neighbourhood: b.neighbourhood, price_kes: b.priceKes,
+    min_nights: b.minNights, max_guests: b.maxGuests, bedrooms: b.bedrooms, status: b.status,
+  };
+  const cols = Object.entries(map).filter(([, v]) => v !== undefined);
+  if (!cols.length) return res.json({ ok: true });
+  const r = await one(db(), `update listings set ${cols.map(([k], i) => `${k} = $${i + 2}`).join(", ")}, updated_at = now() where id = $1 returning id`, [req.params.id, ...cols.map(([, v]) => v)]);
+  if (!r) throw notFound("Listing not found");
+  await audit(req, "listing.edit", "listing", String(req.params.id), b);
+  res.json({ ok: true });
+});
+
+adminRouter.put("/listings/:id/photos", any, async (req, res) => {
+  const { photos } = z.object({ photos: z.array(z.string()) }).parse(req.body);
+  const l = await one<{ photos: string[] }>(db(), `select photos from listings where id = $1`, [req.params.id]);
+  if (!l) throw notFound("Listing not found");
+  if (photos.some((p) => !l.photos.includes(p))) throw badRequest("Photos can be reordered or removed here, not added");
+  await db().query(`update listings set photos = $2, updated_at = now() where id = $1`, [req.params.id, photos]);
+  await audit(req, "listing.photos", "listing", String(req.params.id), { removed: l.photos.filter((p) => !photos.includes(p)) });
+  res.json({ photos });
+});
+
+adminRouter.put("/listings/:id/occupancy", any, async (req, res) => {
+  const b = z
+    .discriminatedUnion("status", [z.object({ status: z.literal("available") }), z.object({ status: z.literal("occupied"), until: z.iso.datetime({ offset: true }) })])
+    .parse(req.body);
+  if (b.status === "occupied" && new Date(b.until).getTime() <= Date.now()) throw badRequest("Choose a check-out time in the future");
+  const r = await one(db(), `update listings set occupancy = $2, occupied_until = $3, updated_at = now() where id = $1 and type = 'STAY' returning id`, [
+    req.params.id, b.status, b.status === "occupied" ? b.until : null,
+  ]);
+  if (!r) throw notFound("Stay not found");
+  await audit(req, "listing.occupancy", "listing", String(req.params.id), b);
+  res.json({ ok: true });
+});
+
+adminRouter.delete("/listings/:id", any, async (req, res) => {
+  const l = await one<{ id: string; title: string }>(db(), `select id, title from listings where id = $1`, [req.params.id]);
+  if (!l) throw notFound("Listing not found");
+  const used = await one(db(), `select 1 from bookings where listing_id = $1 limit 1`, [l.id]);
+  if (used) await db().query(`update listings set status = 'PAUSED' where id = $1`, [l.id]);
+  else await db().query(`delete from listings where id = $1`, [l.id]);
+  await audit(req, used ? "listing.pause" : "listing.delete", "listing", l.id, { title: l.title });
+  res.json({ removed: !used, paused: Boolean(used) });
+});
+
+// ——— Bookings ———
+
+adminRouter.get("/bookings/:id", any, async (req, res) => {
+  if (!z.uuid().safeParse(req.params.id).success) throw notFound("Booking not found");
+  const b = await one<Record<string, any>>(
+    db(),
+    `select b.*, l.title, l.type, l.photos, g.full_name as guest_name, g.phone as guest_phone, g.email as guest_email,
+            h.full_name as host_name, h.phone as host_phone,
+            p.status as payment_status, p.mpesa_receipt, p.phone as paid_from, p.completed_at as paid_at,
+            coalesce((p.meta->>'refund_needed')::boolean, false) as refund_needed, p.meta->>'refund_reference' as refund_reference,
+            po.id as payout_id, po.status as payout_status, po.amount_kes as payout_kes, po.reference as payout_reference, po.phone as payout_phone, po.last_error as payout_error
+       from bookings b join listings l on l.id = b.listing_id join users g on g.id = b.user_id join users h on h.id = b.host_id
+       left join payments p on p.id = b.payment_id left join payouts po on po.booking_id = b.id
+      where b.id = $1`,
+    [req.params.id],
+  );
+  if (!b) throw notFound("Booking not found");
+  res.json({ booking: b });
+});
+
+adminRouter.post("/bookings/:id/complete", any, async (req, res) => {
+  const r = await one(db(), `update bookings set status = 'COMPLETED', completed_at = now() where id = $1 and status = 'CONFIRMED' returning id`, [req.params.id]);
+  if (!r) throw conflict("Only a confirmed booking can be marked complete");
+  await audit(req, "booking.complete", "booking", String(req.params.id));
+  res.json({ ok: true });
+});
+
+// ——— Connect ———
+
+adminRouter.get("/connect", any, async (req, res) => {
+  const f = z.object({ q: z.string().trim().max(80).optional(), visible: z.enum(["all", "shown", "hidden"]).default("all") }).parse(req.query);
+  const vals: unknown[] = [];
+  const where = [`u.status = 'active'`];
+  if (f.q) {
+    vals.push(`%${f.q}%`);
+    where.push(`(u.full_name ilike $${vals.length} or u.email ilike $${vals.length} or u.phone ilike $${vals.length})`);
+  }
+  if (f.visible !== "all") where.push(f.visible === "shown" ? `c.visible` : `not c.visible`);
+  const rows = await many(
+    db(),
+    `select c.user_id, c.intent, c.arrangement_role, c.visible, c.photos, c.headline, c.updated_at, u.full_name, u.date_of_birth, u.gender, u.city, u.phone,
+            u.id_verified_at, u.last_seen_at,
+            (select count(*) from matches m where (m.user_a = u.id or m.user_b = u.id) and m.status = 'active')::int as matches,
+            (select count(*) from reports r where r.target_user_id = u.id and r.status = 'OPEN')::int as open_reports
+       from connect_profiles c join users u on u.id = c.user_id where ${where.join(" and ")} order by c.updated_at desc limit 300`,
+    vals,
+  );
+  res.json({ items: rows.map((r: any) => ({ ...r, age: ageFrom(r.date_of_birth) })) });
+});
+
+adminRouter.post("/connect/:userId/visibility", any, async (req, res) => {
+  const { visible } = z.object({ visible: z.boolean() }).parse(req.body);
+  const r = await one(db(), `update connect_profiles set visible = $2, updated_at = now() where user_id = $1 returning user_id`, [req.params.userId, visible]);
+  if (!r) throw notFound("Profile not found");
+  await audit(req, visible ? "connect.show" : "connect.hide", "user", String(req.params.userId));
+  res.json({ ok: true });
+});
+
+// ——— Announcements ———
+
+adminRouter.get("/announcements", any, async (_req, res) => {
+  res.json({ items: await many(db(), `select a.*, u.full_name as user_name from announcements a left join users u on u.id = a.user_id order by a.created_at desc limit 100`) });
+});
+
+/** An in-app message to everyone, hosts, guests or one person, optionally also by SMS. */
+adminRouter.post("/announcements", any, async (req, res) => {
+  const b = z
+    .object({
+      audience: z.enum(["all", "hosts", "guests", "user"]),
+      userId: z.uuid().optional(),
+      title: z.string().trim().min(3, "Write a title").max(120),
+      body: z.string().trim().max(600).default(""),
+      link: z.string().trim().max(200).optional().or(z.literal("").transform(() => undefined)),
+      sms: z.boolean().default(false),
+    })
+    .refine((v) => v.audience !== "user" || v.userId, { message: "Choose who to send it to", path: ["userId"] })
+    .parse(req.body);
+  if (b.link && !b.link.startsWith("/")) throw badRequest("Links must be a page on Konnect, starting with /", [{ path: "link", message: "Start with /" }]);
+  const filter = {
+    all: "true",
+    hosts: "exists (select 1 from listings l where l.host_id = u.id)",
+    guests: "not exists (select 1 from listings l where l.host_id = u.id)",
+    user: "u.id = $4",
+  }[b.audience];
+  const params: unknown[] = [b.title, b.body, b.link ?? null];
+  if (b.audience === "user") params.push(b.userId);
+  const sent = await many<{ id: string; user_id: string; created_at: Date }>(
+    db(),
+    `insert into notifications (user_id, kind, title, body, link)
+     select u.id, 'announcement', $1, $2, $3 from users u where u.status = 'active' and not u.is_sample and ${filter}
+     returning id, user_id, created_at`,
+    params,
+  );
+  await db().query(`insert into announcements (admin_id, audience, user_id, title, body, link, sms, recipients) values ($1, $2, $3, $4, $5, $6, $7, $8)`, [
+    req.admin!.id, b.audience, b.userId ?? null, b.title, b.body, b.link ?? null, b.sms, sent.length,
+  ]);
+  for (const n of sent) emit(n.user_id, "notification", { id: n.id, kind: "announcement", title: b.title, body: b.body, link: b.link ?? null, created_at: n.created_at, read_at: null });
+  await audit(req, "announcement.send", null, null, { audience: b.audience, recipients: sent.length, sms: b.sms });
+  res.status(201).json({ recipients: sent.length });
+  // Texts go out after the answer, one at a time.
+  if (b.sms && sent.length) {
+    const phones = await many<{ phone: string }>(db(), `select phone from users where id = any($1::uuid[]) and phone like '+254%'`, [sent.map((s) => s.user_id)]);
+    const text = `Konnect: ${b.title}${b.body ? ` ${b.body}` : ""}`.slice(0, 320);
+    for (const p of phones) await sendSms(p.phone, text).catch(() => false);
+  }
+});

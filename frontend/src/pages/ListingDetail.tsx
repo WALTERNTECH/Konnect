@@ -35,6 +35,7 @@ import { PaymentSheet } from "../components/PaymentSheet";
 import { Avatar, BackLink, Button, Empty, Modal, Select, Skeleton, Textarea, Verified } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ui";
+import { useSite } from "../lib/site";
 import { addDays, CATEGORY, daysBetween, fmtDay, fmtMonthYear, fmtRange, fmtTime, kes, plural, todayYmd } from "../lib/format";
 import type { Booking, Host, ListingDetail as L, Review } from "../types";
 
@@ -288,6 +289,7 @@ function BookingPanel({ l }: { l: L }) {
   const subtotal = stay ? l.priceKes * nights : l.priceKes;
   const deposit = !stay && payMode === "deposit" && l.depositPct ? Math.ceil((l.priceKes * l.depositPct) / 100) : subtotal;
   const ready = stay ? nights > 0 : Boolean(slot) && (mode !== "home" || address.trim().length >= 6);
+  const site = useSite();
 
   const reserve = async () => {
     setErr(null);
@@ -397,8 +399,8 @@ function BookingPanel({ l }: { l: L }) {
         </div>
       )}
       {err && <div className="notice notice-danger small">{err}</div>}
-      <Button variant="primary" size="lg" block loading={busy} onClick={reserve} disabled={l.mine}>
-        {l.mine ? "This is your listing" : stay ? (nights ? "Reserve" : "Check availability") : "Book"}
+      <Button variant="primary" size="lg" block loading={busy} onClick={reserve} disabled={l.mine || !site.bookingsOpen}>
+        {l.mine ? "This is your listing" : !site.bookingsOpen ? "Bookings are paused for now" : stay ? (nights ? "Reserve" : "Check availability") : "Book"}
       </Button>
       {(stay ? nights > 0 : Boolean(slot)) && breakdown}
       <p className="tiny muted center">Paid by M-Pesa. You won't be charged until you enter your PIN.</p>

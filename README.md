@@ -8,7 +8,13 @@ Stays, wellness and introductions across Kenya, paid by M-Pesa. A web app built 
 - **Connect** — profiles, likes, matches and messaging for signed-in adults, with block, report, meetup sharing and SOS.
 - **Hosting** — listing editor, availability and calendar, bookings, earnings and payouts, and paid featuring.
 - **Advertising** — self-serve partner placements (CPM or CPC) between listings.
-- **Admin console** at `/admin` — password plus authenticator code; income and bookings, users, listing approval, verification documents, reports, SOS, payments with CSV export and refunds, the payout queue (send again, or record a payout made by hand), ads, the commission rate, team roles and an audit log.
+- **Control centre** — a separate app on its own host that runs everything: income and bookings, the payout queue, payments with CSV export and refunds, editing any user, listing or booking, occupancy, Connect visibility, verification, reports and SOS, ads, announcements to everyone or one person (in-app and SMS), site switches (sign-ups, bookings, Connect, Wellness) and a banner, prices and the commission rate, and an audit log.
+
+## The control centre
+
+It has exactly one account. On first visit it asks for the setup key (the server's `ADMIN_SETUP_TOKEN`), an email and a password; after that nothing can create another account, and the database refuses a second row too. Sign-in is email and password, with an optional authenticator app (Security). Eight wrong passwords lock sign-in for 15 minutes. A forgotten password is reset on the sign-in page with the setup key, which also removes the authenticator and signs out every device.
+
+The site and the control centre are the same code run with `APP_ROLE=public` and `APP_ROLE=admin`. The site doesn't answer `/api/admin` at all; the control centre answers only its own API and serves `admin.html`. Only the site runs the minute jobs, so payouts are never sent twice.
 
 ## Layout
 
@@ -34,7 +40,7 @@ npm run dev:backend
 npm run dev:frontend
 ```
 
-Without `DATABASE_URL` the API uses an embedded Postgres in `.local/pglite`. Payments and payouts are simulated, so every M-Pesa prompt confirms itself after a few seconds and the host's share is marked sent. The first admin is created at http://localhost:5173/admin with the setup token `local-setup`.
+Without `DATABASE_URL` the API uses an embedded Postgres in `.local/pglite`. Payments and payouts are simulated, so every M-Pesa prompt confirms itself after a few seconds and the host's share is marked sent. The control centre runs locally with `APP_ROLE=admin` (it serves the built `admin.html`); its setup key locally is `local-setup`.
 
 ```bash
 npm test

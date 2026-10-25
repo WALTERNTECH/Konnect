@@ -6,7 +6,7 @@ import { env } from "../config/env.js";
 import { requireAuth } from "../middleware/auth.js";
 import { paymentDriver, publicPayment, settle, startPayment, type PaymentRow } from "../services/payments.js";
 import { getSettings } from "../services/settings.js";
-import { badRequest, conflict, notFound } from "../utils/http.js";
+import { badRequest, conflict, HttpError, notFound } from "../utils/http.js";
 import { daraja, parseB2cResult, parseCallback } from "../utils/mpesa.js";
 import { handleB2cResult } from "../services/payouts.js";
 import { phoneField } from "./auth.routes.js";
@@ -24,6 +24,7 @@ mpesaRouter.post("/stk-push", requireAuth, async (req, res) => {
   const userId = req.user!.id;
   const s = await getSettings();
   if (b.purpose === "BOOKING") {
+    if (!s.bookings_open) throw new HttpError(403, "bookings_closed", "Bookings are paused for now");
     const bk = await one<{ id: string; ref: string; user_id: string; status: string; due_now_kes: number; created_at: Date }>(
       db(),
       `select id, ref, user_id, status, due_now_kes, created_at from bookings where id = $1`,

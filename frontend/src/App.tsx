@@ -1,7 +1,6 @@
-import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppLayout, RequireAuth } from "./components/Layout";
-import { Empty, LinkButton, Spinner } from "./components/ui";
+import { Empty, LinkButton } from "./components/ui";
 import { LiveEvents } from "./context/AuthContext";
 import Account from "./pages/Account";
 import Advertise from "./pages/Advertise";
@@ -14,8 +13,6 @@ import { Privacy, SafetyPage, Terms } from "./pages/Info";
 import ListingDetail from "./pages/ListingDetail";
 import Messages from "./pages/Messages";
 import { TripDetail, Trips } from "./pages/Trips";
-
-const Admin = lazy(() => import("./admin/Admin"));
 
 function NotFound() {
   return (
@@ -32,20 +29,6 @@ export default function App() {
     <>
       <LiveEvents />
       <Routes>
-        <Route
-          path="/admin/*"
-          element={
-            <Suspense
-              fallback={
-                <div className="auth">
-                  <Spinner />
-                </div>
-              }
-            >
-              <Admin />
-            </Suspense>
-          }
-        />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/forgot" element={<Forgot />} />

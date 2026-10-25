@@ -5,6 +5,7 @@ import { db, one } from "../config/db.js";
 import { env } from "../config/env.js";
 import { requireAuth } from "../middleware/auth.js";
 import { checkCode, sendCode } from "../services/otp.js";
+import { requireSwitch } from "../services/settings.js";
 import { badRequest, conflict, HttpError, unauthorized } from "../utils/http.js";
 import { ageFrom, normalizePhone } from "../utils/kenya.js";
 import { hashPassword, shortRef, signUser, verifyPassword } from "../utils/security.js";
@@ -38,7 +39,7 @@ const Signup = z.object({
   payoutPhone: z.string().optional().or(z.literal("").transform(() => undefined)),
 });
 
-authRouter.post("/signup", strict, async (req, res) => {
+authRouter.post("/signup", strict, requireSwitch("signups_open", "New accounts are closed for now"), async (req, res) => {
   const b = Signup.parse(req.body);
   const age = ageFrom(b.dateOfBirth);
   if (!(age >= 18)) throw badRequest("Konnect is for adults aged 18 and over", [{ path: "dateOfBirth", message: "You must be 18 or older" }]);

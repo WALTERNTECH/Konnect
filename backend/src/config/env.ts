@@ -3,8 +3,14 @@
 
 export type Env = {
   nodeEnv: "development" | "test" | "production";
+  /**
+   * Which half of Konnect this process serves. "public" is the site and its API (and runs the
+   * background jobs); "admin" is the control centre on its own host; "all" is both, for
+   * local work and tests.
+   */
+  appRole: "public" | "admin" | "all";
   port: number;
-  /** Public origin of this deployment, used for M-Pesa callbacks and links in SMS. */
+  /** Public origin of the site, used for M-Pesa callbacks and links in SMS. The control centre points this at the site too. */
   publicUrl: string;
   corsOrigin: string[];
   databaseUrl: string | null;
@@ -62,8 +68,10 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): Env {
   const darajaConfigured = Boolean(e.MPESA_CONSUMER_KEY && e.MPESA_CONSUMER_SECRET && e.MPESA_PASSKEY);
   const publicUrl = (e.PUBLIC_URL ?? e.RENDER_EXTERNAL_URL ?? `http://localhost:${e.PORT ?? 4000}`).replace(/\/$/, "");
 
+  const role = e.APP_ROLE === "admin" || e.APP_ROLE === "public" || e.APP_ROLE === "all" ? e.APP_ROLE : nodeEnv === "production" ? "public" : "all";
   const env: Env = {
     nodeEnv,
+    appRole: role,
     port: Number(e.PORT ?? 4000),
     publicUrl,
     corsOrigin: (e.CORS_ORIGIN ?? "http://localhost:5173").split(",").map((s) => s.trim()).filter(Boolean),

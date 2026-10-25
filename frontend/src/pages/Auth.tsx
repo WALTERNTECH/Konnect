@@ -6,6 +6,7 @@ import { Mark } from "../components/brand/Logo";
 import { Button, CodeInput, Field, Input, PhoneInput } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ui";
+import { useSite } from "../lib/site";
 import type { Me } from "../types";
 
 const safeNext = (n: string | null) => (n && n.startsWith("/") && !n.startsWith("//") ? n : "/");
@@ -93,6 +94,7 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July", 
 
 export function Signup() {
   const { signup } = useAuth();
+  const site = useSite();
   const nav = useNavigate();
   const [params] = useSearchParams();
   const next = safeNext(params.get("next"));
@@ -154,6 +156,7 @@ export function Signup() {
 
   return (
     <AuthShell title="Create your account" sub={["Your details", "About you", "Secure your account"][step]}>
+      {!site.signupsOpen && <div className="notice notice-warn small">New accounts are closed for now. Existing members can still sign in.</div>}
       <div className="steps">
         {[0, 1, 2].map((i) => (
           <span key={i} className={i <= step ? "on" : ""} />

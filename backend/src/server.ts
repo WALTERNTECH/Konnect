@@ -12,13 +12,15 @@ async function main() {
   const db = env.databaseUrl ? pgDb(env.databaseUrl) : await pgliteDb(process.env.PGLITE_DIR ?? "../.local/pglite");
   setDb(db);
   await migrate(db, (m) => console.log(`[db] ${m}`));
-  if (env.sampleContent) await seedSamples(db, (m) => console.log(`[seed] ${m}`));
+  // The site seeds samples and runs the minute jobs; the control centre only answers its own API,
+  // so payouts and reconciliation never run twice.
+  if (env.appRole !== "admin" && env.sampleContent) await seedSamples(db, (m) => console.log(`[seed] ${m}`));
   initPayments();
   initPayouts();
-  startJobs();
+  if (env.appRole !== "admin") startJobs();
 
   const server = createApp().listen(env.port, () => {
-    console.log(`[konnect] listening on :${env.port} (${env.nodeEnv}, ${env.databaseUrl ? "postgres" : "pglite"})`);
+    console.log(`[konnect] ${env.appRole === "admin" ? "control centre" : env.appRole === "public" ? "site" : "site and control centre"} listening on :${env.port} (${env.nodeEnv}, ${env.databaseUrl ? "postgres" : "pglite"})`);
   });
   const stop = () => {
     console.log("[konnect] shutting down");

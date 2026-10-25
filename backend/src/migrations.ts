@@ -429,3 +429,28 @@ update ads set headline = 'Host on Konnect', ad_text = 'List your apartment or v
 delete from settings where key in ('premium_monthly_kes','premium_annual_kes','booking_fee_kes','referral_days','payout_delay_hours');
 `,
 });
+
+// The control centre has exactly one account. The unique index on a constant makes a
+// second row impossible, whatever the application code does.
+MIGRATIONS.push({
+  id: "004_single_owner_announcements",
+  sql: `
+alter table admin_users add column failed_logins integer not null default 0;
+alter table admin_users add column locked_until timestamptz;
+create unique index admin_users_single on admin_users ((true));
+
+create table announcements (
+  id uuid primary key default gen_random_uuid(),
+  admin_id uuid references admin_users(id) on delete set null,
+  audience text not null check (audience in ('all','hosts','guests','user')),
+  user_id uuid references users(id) on delete set null,
+  title text not null,
+  body text not null default '',
+  link text,
+  sms boolean not null default false,
+  recipients integer not null default 0,
+  created_at timestamptz not null default now()
+);
+alter table announcements enable row level security;
+`,
+});

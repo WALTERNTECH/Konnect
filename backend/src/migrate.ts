@@ -2,7 +2,11 @@ import { env } from "./config/env.js";
 import { pgDb, SCHEMA, type Db } from "./config/db.js";
 import { MIGRATIONS } from "./migrations.js";
 
-/** Applies pending migrations in order, each in its own transaction. */
+/**
+ * Applies pending migrations in order, each in its own transaction. The site and the
+ * control centre both boot against the same database, so each migration takes an advisory
+ * lock and re-checks whether the other one already applied it.
+ */
 export async function migrate(db: Db, log: (m: string) => void = () => {}) {
   // In production the schema exists already and its owner may not create schemas;
   // "create schema if not exists" checks that right even when the schema is there.
@@ -13,12 +17,16 @@ export async function migrate(db: Db, log: (m: string) => void = () => {}) {
   const done = new Set(rows.map((r) => r.id));
   for (const m of MIGRATIONS) {
     if (done.has(m.id)) continue;
-    await db.tx(async (q) => {
+    const applied = await db.tx(async (q) => {
+      await q.query(`select pg_advisory_xact_lock(73110421)`);
+      const again = await q.query(`select 1 from ${SCHEMA}.schema_migrations where id = $1`, [m.id]);
+      if (again.rows.length) return false;
       await q.exec(`set local search_path to ${SCHEMA}, public`);
       await q.exec(m.sql);
       await q.query(`insert into ${SCHEMA}.schema_migrations (id) values ($1)`, [m.id]);
+      return true;
     });
-    log(`migrated ${m.id}`);
+    if (applied) log(`migrated ${m.id}`);
   }
 }
 

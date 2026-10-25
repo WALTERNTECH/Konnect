@@ -341,3 +341,14 @@
     display: none;
   }
 }
+
+/* A line from the control centre across the top of the site. */
+.site-banner {
+  position: relative;
+  z-index: 51;
+  padding: 9px var(--gutter);
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 13.5px;
+  text-align: center;
+}

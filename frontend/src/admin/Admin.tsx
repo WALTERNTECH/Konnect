@@ -1,153 +1,190 @@
-import "../styles/admin.css";
 import {
   BadgeCheck,
   CalendarDays,
+  ExternalLink,
   Flag,
+  HeartHandshake,
+  KeyRound,
   LayoutDashboard,
   ListChecks,
   LogOut,
   Megaphone,
   Receipt,
   ScrollText,
+  Send,
   Settings,
   Siren,
-  UserCog,
   Users,
   Wallet,
 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
-import { errorMessage } from "../api/client";
+import { errorMessage, fieldErrors } from "../api/client";
 import { Logo, Mark } from "../components/brand/Logo";
 import { ThemeSwitch } from "../components/Layout";
 import { Button, CodeInput, Input, Spinner } from "../components/ui";
 import { adminApi, adminToken, setOnExpired, useAdmin } from "./api";
-import { Ads, Audit, Bookings, Listings, Overview, Payments, Payouts, Reports, Safety, SettingsPage, Team, Users as UsersPage, Verification } from "./pages";
+import { Announcements, ConnectPage, SecurityPage } from "./more";
+import { Ads, Audit, Bookings, Listings, Overview, Payments, Payouts, Reports, Safety, SettingsPage, Users as UsersPage, Verification } from "./pages";
 
-export type AdminMe = { id: string; email: string; name: string; role: "owner" | "admin" | "moderator" | "finance" };
-type Enrol = { secret: string; uri: string; qr: string };
+export type AdminMe = { id: string; email: string; name: string; role: string };
 
 export default function Admin() {
   const [token, setToken] = useState(adminToken.get());
   const [me, setMe] = useState<AdminMe | null>(null);
+  const [siteUrl, setSiteUrl] = useState("");
   useEffect(() => {
-    document.title = "Konnect Admin";
     setOnExpired(() => {
       setToken(null);
       setMe(null);
     });
-    return () => {
-      document.title = "Konnect";
-    };
   }, []);
   useEffect(() => {
     if (!token) return;
     adminApi
-      .get<{ admin: AdminMe }>("/me")
-      .then((r) => setMe(r.data.admin))
+      .get<{ admin: AdminMe; siteUrl: string }>("/me")
+      .then((r) => {
+        setMe(r.data.admin);
+        setSiteUrl(r.data.siteUrl);
+      })
       .catch(() => {
         adminToken.set(null);
         setToken(null);
       });
   }, [token]);
-  if (!token) return <SignIn onDone={(t) => (adminToken.set(t), setToken(t))} />;
+  const adopt = (t: string) => {
+    adminToken.set(t);
+    setToken(t);
+  };
+  if (!token) return <SignIn onDone={adopt} />;
   if (!me)
     return (
       <div className="auth">
         <Spinner />
       </div>
     );
-  return <Shell me={me} onSignOut={() => (adminToken.set(null), setToken(null), setMe(null))} />;
+  return <Shell me={me} siteUrl={siteUrl} onToken={adopt} onSignOut={() => (adminToken.set(null), setToken(null), setMe(null))} />;
 }
+
+// ——— Sign-in ———
+
+type Stage = "setup" | "password" | "code" | "recover";
 
 function SignIn({ onDone }: { onDone: (token: string) => void }) {
   const setup = useAdmin<{ needed: boolean; available: boolean }>("/setup");
-  const [stage, setStage] = useState<"password" | "code">("password");
+  const [stage, setStage] = useState<Stage>("password");
   const [pre, setPre] = useState<string | null>(null);
-  const [enrol, setEnrol] = useState<Enrol | null>(null);
-  const [f, setF] = useState({ email: "", password: "", name: "", token: "" });
+  const [f, setF] = useState({ key: "", email: "", password: "", confirm: "" });
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const firstRun = setup.data?.needed;
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (setup.data?.needed) setStage("setup");
+  }, [setup.data?.needed]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    setBusy(true);
     setError(null);
+    setErrors({});
+    if ((stage === "setup" || stage === "recover") && f.password !== f.confirm) return setErrors({ confirm: "The passwords don't match" });
+    setBusy(true);
     try {
-      if (stage === "password") {
-        const r = firstRun
-          ? await adminApi.post<{ token: string; enrol: Enrol }>("/setup", { token: f.token, name: f.name, email: f.email, password: f.password })
-          : await adminApi.post<{ token: string; enrol: Enrol | null }>("/login", { email: f.email, password: f.password });
-        setPre(r.data.token);
-        setEnrol(r.data.enrol);
-        setStage("code");
+      if (stage === "setup") {
+        const r = await adminApi.post<{ token: string }>("/setup", { token: f.key, email: f.email, password: f.password });
+        onDone(r.data.token);
+      } else if (stage === "recover") {
+        const r = await adminApi.post<{ token: string }>("/recover", { token: f.key, password: f.password });
+        onDone(r.data.token);
+      } else if (stage === "password") {
+        const r = await adminApi.post<{ token: string; needsCode: boolean }>("/login", { email: f.email, password: f.password });
+        if (r.data.needsCode) {
+          setPre(r.data.token);
+          setStage("code");
+        } else onDone(r.data.token);
       } else {
         const r = await adminApi.post<{ token: string }>("/totp", { code }, { headers: { Authorization: `Bearer ${pre}` } });
         onDone(r.data.token);
       }
     } catch (err) {
       setError(errorMessage(err));
+      setErrors(fieldErrors(err));
     } finally {
       setBusy(false);
     }
   };
 
+  if (setup.loading)
+    return (
+      <div className="auth">
+        <Spinner />
+      </div>
+    );
+
+  const title = { setup: "Set up the control centre", password: "Konnect Control", code: "Authenticator code", recover: "Reset your password" }[stage];
+  const sub = {
+    setup: "This creates the only account the control centre will ever have. Use the setup key from the server's ADMIN_SETUP_TOKEN setting, then choose your email and password.",
+    password: "Sign in with your email and password.",
+    code: "Enter the 6-digit code from your authenticator app.",
+    recover: "The setup key sets a new password. It also removes the authenticator and signs out every other device.",
+  }[stage];
+
   return (
-    <div className="auth">
+    <div className="auth control-auth">
       <div className="auth-card">
         <div className="row g-10" style={{ color: "var(--ink)" }}>
           <Mark size={40} />
-          <span className="badge badge-outline">Admin</span>
+          <span className="badge badge-outline">Control</span>
         </div>
         <div className="stack g-8">
-          <h1 className="display d-3">{stage === "code" ? (enrol ? "Set up your authenticator" : "Authenticator code") : firstRun ? "Create the owner account" : "Admin sign-in"}</h1>
-          <p className="soft small">
-            {stage === "code"
-              ? enrol
-                ? "Scan this with Google Authenticator, Microsoft Authenticator or 1Password, then enter the 6-digit code it shows."
-                : "Enter the 6-digit code from your authenticator app."
-              : firstRun
-                ? "No admin exists yet. Use the setup token from the server's ADMIN_SETUP_TOKEN setting."
-                : "For the Konnect team."}
-          </p>
+          <h1 className="display d-3">{title}</h1>
+          <p className="soft small">{sub}</p>
         </div>
         <form className="stack g-16" onSubmit={submit}>
-          {stage === "password" ? (
-            <>
-              {firstRun && (
-                <>
-                  <Input label="Setup token" value={f.token} onChange={(e) => setF({ ...f, token: e.target.value })} autoComplete="off" />
-                  <Input label="Your name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
-                </>
-              )}
-              <Input label="Email" type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} autoComplete="username" autoFocus={!firstRun} />
-              <Input label="Password" type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} autoComplete={firstRun ? "new-password" : "current-password"} hint={firstRun ? "At least 12 characters." : undefined} />
-            </>
-          ) : (
-            <>
-              {enrol && (
-                <div className="stack g-10" style={{ alignItems: "center" }}>
-                  <img src={enrol.qr} alt="Authenticator QR code" className="qr" />
-                  <span className="tiny muted">Or enter this key by hand</span>
-                  <span className="secret">{enrol.secret.replace(/(.{4})/g, "$1 ").trim()}</span>
-                </div>
-              )}
-              <CodeInput value={code} onChange={setCode} autoFocus />
-            </>
+          {(stage === "setup" || stage === "recover") && (
+            <Input label="Setup key" value={f.key} onChange={(e) => setF({ ...f, key: e.target.value })} autoComplete="off" error={errors.token} autoFocus />
           )}
+          {(stage === "setup" || stage === "password") && (
+            <Input label="Email" type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} autoComplete="username" error={errors.email} autoFocus={stage === "password"} />
+          )}
+          {stage !== "code" && (
+            <Input
+              label={stage === "password" ? "Password" : "New password"}
+              type="password"
+              value={f.password}
+              onChange={(e) => setF({ ...f, password: e.target.value })}
+              autoComplete={stage === "password" ? "current-password" : "new-password"}
+              hint={stage === "password" ? undefined : "At least 10 characters."}
+              error={errors.password}
+            />
+          )}
+          {(stage === "setup" || stage === "recover") && (
+            <Input label="Confirm password" type="password" value={f.confirm} onChange={(e) => setF({ ...f, confirm: e.target.value })} autoComplete="new-password" error={errors.confirm} />
+          )}
+          {stage === "code" && <CodeInput value={code} onChange={setCode} autoFocus />}
           {error && <div className="notice notice-danger small">{error}</div>}
           <Button variant="primary" size="lg" block loading={busy} type="submit">
-            {stage === "code" ? "Verify" : firstRun ? "Create owner" : "Continue"}
+            {{ setup: "Create the account", password: "Sign in", code: "Verify", recover: "Set new password" }[stage]}
           </Button>
+          {stage === "password" && (
+            <button type="button" className="small link" style={{ alignSelf: "center" }} onClick={() => (setStage("recover"), setError(null))}>
+              Forgot your password?
+            </button>
+          )}
+          {(stage === "recover" || stage === "code") && (
+            <button type="button" className="small link" style={{ alignSelf: "center" }} onClick={() => (setStage("password"), setError(null))}>
+              Back to sign in
+            </button>
+          )}
         </form>
       </div>
     </div>
   );
 }
 
-function Shell({ me, onSignOut }: { me: AdminMe; onSignOut: () => void }) {
+// ——— Shell ———
+
+function Shell({ me, siteUrl, onSignOut, onToken }: { me: AdminMe; siteUrl: string; onSignOut: () => void; onToken: (t: string) => void }) {
   const nav = useNavigate();
   const ov = useAdmin<{ counts: Record<string, number> }>("/overview");
   const c = ov.data?.counts ?? {};
@@ -158,60 +195,72 @@ function Shell({ me, onSignOut }: { me: AdminMe; onSignOut: () => void }) {
       <aside className="admin-side">
         <div className="brand">
           <Logo height={22} node="#cc6845" />
-          <small>Admin</small>
+          <small>Control</small>
         </div>
-        <NavLink to="/admin" end className={link}>
+        <NavLink to="/" end className={link}>
           <LayoutDashboard /> Overview
         </NavLink>
-        <div className="group">Moderation</div>
-        <NavLink to="/admin/listings" className={link}>
-          <ListChecks /> Listings <Count n={c.q_listings} />
-        </NavLink>
-        <NavLink to="/admin/verification" className={link}>
-          <BadgeCheck /> Verification <Count n={c.q_verifications} />
-        </NavLink>
-        <NavLink to="/admin/reports" className={link}>
-          <Flag /> Reports <Count n={c.q_reports} />
-        </NavLink>
-        <NavLink to="/admin/safety" className={link}>
-          <Siren /> Safety <Count n={c.q_sos} />
-        </NavLink>
-        <NavLink to="/admin/users" className={link}>
-          <Users /> Users
-        </NavLink>
         <div className="group">Money</div>
-        <NavLink to="/admin/bookings" className={link}>
+        <NavLink to="/bookings" className={link}>
           <CalendarDays /> Bookings
         </NavLink>
-        <NavLink to="/admin/payments" className={link}>
+        <NavLink to="/payments" className={link}>
           <Receipt /> Payments <Count n={c.q_refunds} />
         </NavLink>
-        <NavLink to="/admin/payouts" className={link}>
+        <NavLink to="/payouts" className={link}>
           <Wallet /> Payouts <Count n={c.q_payouts} />
         </NavLink>
-        <NavLink to="/admin/ads" className={link}>
+        <NavLink to="/ads" className={link}>
           <Megaphone /> Ads <Count n={c.q_ads} />
         </NavLink>
+        <div className="group">People and places</div>
+        <NavLink to="/listings" className={link}>
+          <ListChecks /> Listings <Count n={c.q_listings} />
+        </NavLink>
+        <NavLink to="/users" className={link}>
+          <Users /> Users
+        </NavLink>
+        <NavLink to="/connect" className={link}>
+          <HeartHandshake /> Connect
+        </NavLink>
+        <NavLink to="/verification" className={link}>
+          <BadgeCheck /> Verification <Count n={c.q_verifications} />
+        </NavLink>
+        <div className="group">Safety</div>
+        <NavLink to="/reports" className={link}>
+          <Flag /> Reports <Count n={c.q_reports} />
+        </NavLink>
+        <NavLink to="/safety" className={link}>
+          <Siren /> SOS and meetups <Count n={c.q_sos} />
+        </NavLink>
         <div className="group">Platform</div>
-        <NavLink to="/admin/settings" className={link}>
-          <Settings /> Settings
+        <NavLink to="/announcements" className={link}>
+          <Send /> Announcements
         </NavLink>
-        <NavLink to="/admin/team" className={link}>
-          <UserCog /> Team
+        <NavLink to="/settings" className={link}>
+          <Settings /> Settings and switches
         </NavLink>
-        <NavLink to="/admin/audit" className={link}>
+        <NavLink to="/security" className={link}>
+          <KeyRound /> Security
+        </NavLink>
+        <NavLink to="/audit" className={link}>
           <ScrollText /> Audit log
         </NavLink>
         <div className="foot stack g-10">
-          <span>
-            {me.name} · {me.role}
+          {siteUrl && (
+            <a href={siteUrl} target="_blank" rel="noreferrer" className="row g-8" style={{ padding: 0, color: "inherit" }}>
+              <ExternalLink size={15} /> Open the site
+            </a>
+          )}
+          <span className="tiny" style={{ wordBreak: "break-all" }}>
+            {me.email}
           </span>
           <button
             className="row g-8"
             style={{ color: "inherit" }}
             onClick={() => {
               onSignOut();
-              nav("/admin");
+              nav("/");
             }}
           >
             <LogOut size={15} /> Sign out
@@ -222,18 +271,20 @@ function Shell({ me, onSignOut }: { me: AdminMe; onSignOut: () => void }) {
         <Routes>
           <Route index element={<Overview />} />
           <Route path="users" element={<UsersPage />} />
-          <Route path="listings" element={<Listings />} />
+          <Route path="listings" element={<Listings siteUrl={siteUrl} />} />
           <Route path="bookings" element={<Bookings />} />
           <Route path="payments" element={<Payments />} />
           <Route path="payouts" element={<Payouts />} />
           <Route path="ads" element={<Ads />} />
+          <Route path="connect" element={<ConnectPage />} />
           <Route path="verification" element={<Verification />} />
           <Route path="reports" element={<Reports />} />
           <Route path="safety" element={<Safety />} />
-          <Route path="settings" element={<SettingsPage me={me} />} />
-          <Route path="team" element={<Team me={me} />} />
+          <Route path="announcements" element={<Announcements />} />
+          <Route path="settings" element={<SettingsPage />} />
+          <Route path="security" element={<SecurityPage email={me.email} onToken={onToken} />} />
           <Route path="audit" element={<Audit />} />
-          <Route path="*" element={<Navigate to="/admin" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         <div className="row mt-48" style={{ justifyContent: "flex-end" }}>
           <ThemeSwitch />

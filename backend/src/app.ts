@@ -21,6 +21,7 @@ import { notificationsRouter } from "./routes/notifications.routes.js";
 import { safetyRouter } from "./routes/safety.routes.js";
 import { usersRouter } from "./routes/users.routes.js";
 import { verificationRouter } from "./routes/verification.routes.js";
+import { requireSwitch, siteState } from "./services/settings.js";
 
 export function createApp() {
   const app = express();
@@ -69,29 +70,41 @@ export function createApp() {
     }),
   );
 
-  app.use("/api/auth", authRouter);
-  app.get("/api/users/connect", ...usersConnectHandler);
-  app.use("/api/users", usersRouter);
-  app.use("/api/listings", listingsRouter);
-  app.use("/api/bookings", bookingsRouter);
-  app.use("/api/mpesa", mpesaRouter);
-  app.use("/api/connect", connectRouter);
-  app.use("/api/messages", messagesRouter);
-  app.use("/api/safety", safetyRouter);
-  app.use("/api/verification", verificationRouter);
-  app.use("/api/ads", adsRouter);
-  app.use("/api/host", hostRouter);
-  app.use("/api/notifications", notificationsRouter);
+  const site = env.appRole !== "admin";
+  const control = env.appRole !== "public";
+
+  // Photos are needed on both hosts.
   app.use("/api/media", mediaRouter);
-  app.use("/api/admin", adminRouter);
+
+  if (site) {
+    const connectOpen = requireSwitch("connect_open", "Connect is closed for now");
+    app.get("/api/site", async (_req, res) => res.json(await siteState()));
+    app.use("/api/auth", authRouter);
+    app.get("/api/users/connect", connectOpen, ...usersConnectHandler);
+    app.use("/api/users", usersRouter);
+    app.use("/api/listings", listingsRouter);
+    app.use("/api/bookings", bookingsRouter);
+    app.use("/api/mpesa", mpesaRouter);
+    app.use("/api/connect", connectOpen, connectRouter);
+    app.use("/api/messages", connectOpen, messagesRouter);
+    app.use("/api/safety", safetyRouter);
+    app.use("/api/verification", verificationRouter);
+    app.use("/api/ads", adsRouter);
+    app.use("/api/host", hostRouter);
+    app.use("/api/notifications", notificationsRouter);
+  }
+  // The control centre lives on its own host; the public site doesn't answer for it.
+  if (control) app.use("/api/admin", adminRouter);
   app.use("/api", notFoundHandler);
 
-  // The built single-page app. Hashed assets cache forever; index.html never does.
+  // The built single-page app: the site, or the control centre on its own host. Hashed
+  // assets cache forever; the HTML never does.
   const dist = env.webDist ?? path.resolve(process.cwd(), "../frontend/dist");
-  if (fs.existsSync(path.join(dist, "index.html"))) {
+  const page = path.join(dist, env.appRole === "admin" ? "admin.html" : "index.html");
+  if (fs.existsSync(page)) {
     app.use("/assets", express.static(path.join(dist, "assets"), { immutable: true, maxAge: "1y", index: false }));
     app.use(express.static(dist, { index: false, maxAge: "1d" }));
-    const index = fs.readFileSync(path.join(dist, "index.html"), "utf8");
+    const index = fs.readFileSync(page, "utf8");
     app.get(/^\/(?!api\/).*/, (_req, res) => {
       res.set("Cache-Control", "no-cache").type("html").send(index);
     });

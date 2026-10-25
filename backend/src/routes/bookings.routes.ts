@@ -5,7 +5,7 @@ import { requireAuth, requireVerifiedPhone } from "../middleware/auth.js";
 import { openSlots, unavailableNights, type Hours } from "../services/availability.js";
 import { notify } from "../services/notify.js";
 import { paymentDriver } from "../services/payments.js";
-import { getSettings, splitPayment } from "../services/settings.js";
+import { getSettings, requireSwitch, splitPayment } from "../services/settings.js";
 import { firstName } from "../services/views.js";
 import { badRequest, conflict, forbidden, notFound } from "../utils/http.js";
 import { daysBetween, todayEAT } from "../utils/kenya.js";
@@ -83,13 +83,15 @@ async function bookable(id: string, userId: string) {
   return l;
 }
 
-bookingsRouter.post("/quote", requireAuth, async (req, res) => {
+const bookingsOpen = requireSwitch("bookings_open", "Bookings are paused for now");
+
+bookingsRouter.post("/quote", requireAuth, bookingsOpen, async (req, res) => {
   const r = Req.parse(req.body);
   const l = await bookable(r.listingId, req.user!.id);
   res.json({ quote: await quote(db(), l, r, (await getSettings()).commission_pct) });
 });
 
-bookingsRouter.post("/", requireAuth, requireVerifiedPhone, async (req, res) => {
+bookingsRouter.post("/", requireAuth, requireVerifiedPhone, bookingsOpen, async (req, res) => {
   const r = Req.parse(req.body);
   const l = await bookable(r.listingId, req.user!.id);
   const pct = (await getSettings()).commission_pct; // outside the transaction: PGlite runs one at a time

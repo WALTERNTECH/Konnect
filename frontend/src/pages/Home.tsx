@@ -5,6 +5,7 @@ import { ListingCard, PartnerCard, usePartnerAd } from "../components/ListingCar
 import { SearchPanel, useMeta } from "../components/SearchPanel";
 import { LinkButton, Skeleton, useReveal } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
+import { useSite } from "../lib/site";
 import type { ListingCard as L } from "../types";
 
 function Rail({ items, loading }: { items?: L[]; loading: boolean }) {
@@ -34,6 +35,7 @@ export default function Home() {
   const wellness = useApi<{ items: L[] }>("/listings?type=WELLNESS&limit=10");
   const { data: meta } = useMeta();
   const ad = usePartnerAd("home");
+  const site = useSite();
   useReveal([stays.data, wellness.data]);
 
   const hoods = (meta?.counts ?? [])
@@ -100,6 +102,7 @@ export default function Home() {
         </section>
       )}
 
+      {site.wellnessOpen && (
       <section className="page section">
         <div className="sec-head reveal">
           <div>
@@ -112,7 +115,9 @@ export default function Home() {
         </div>
         <Rail items={wellness.data?.items} loading={wellness.loading} />
       </section>
+      )}
 
+      {site.connectOpen && (
       <section className="page section-tight">
         <div className="feature reveal">
           <div className="feature-media">
@@ -144,6 +149,7 @@ export default function Home() {
           </div>
         </div>
       </section>
+      )}
 
       {ad && (
         <section className="page section-tight">

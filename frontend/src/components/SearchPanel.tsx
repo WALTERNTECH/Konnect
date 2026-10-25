@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useApi } from "../api/client";
 import { CATEGORY, fmtRange } from "../lib/format";
+import { useSite } from "../lib/site";
 import { Calendar } from "./Calendar";
 import { Button } from "./ui";
 
@@ -81,6 +82,7 @@ export function Stepper({ value, onChange, min = 1, max = 16 }: { value: number;
 
 export function SearchPanel() {
   const nav = useNavigate();
+  const site = useSite();
   const [tab, setTab] = useState<"STAY" | "WELLNESS">("STAY");
   const [place, setPlace] = useState("");
   const [range, setRange] = useState<{ start: string | null; end: string | null }>({ start: null, end: null });
@@ -112,9 +114,11 @@ export function SearchPanel() {
         <button type="button" aria-pressed={tab === "STAY"} onClick={() => setTab("STAY")}>
           Stays
         </button>
-        <button type="button" aria-pressed={tab === "WELLNESS"} onClick={() => setTab("WELLNESS")}>
-          Wellness
-        </button>
+        {site.wellnessOpen && (
+          <button type="button" aria-pressed={tab === "WELLNESS"} onClick={() => setTab("WELLNESS")}>
+            Wellness
+          </button>
+        )}
       </div>
       <div className="search-fields">
         <label className="search-field">

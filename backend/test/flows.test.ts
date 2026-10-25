@@ -190,16 +190,51 @@ describe("Konnect", () => {
     assert.equal(push.status, 400);
   });
 
-  it("sets up an admin with an authenticator and approves a listing", async () => {
-    const setup = await call("POST", "/api/admin/setup", { token: "test-setup", name: "Owner", email: "owner@example.com", password: "a long admin password" });
-    assert.equal(setup.status, 201);
-    const noMfa = await call("GET", "/api/admin/overview", undefined, setup.body.token);
-    assert.equal(noMfa.status, 401);
-    const full = await call("POST", "/api/admin/totp", { code: totpAt(setup.body.enrol.secret, Math.floor(Date.now() / 30_000)) }, setup.body.token);
-    assert.equal(full.status, 200);
-    admin = full.body.token;
-    const again = await call("POST", "/api/admin/setup", { token: "test-setup", name: "Xavier", email: "x@example.com", password: "another long password" });
+  it("creates the one control-centre account and refuses a second", async () => {
+    const before = await call("GET", "/api/admin/setup");
+    assert.equal(before.body.needed, true);
+    const badKey = await call("POST", "/api/admin/setup", { token: "wrong", email: "owner@example.com", password: "a long admin password" });
+    assert.equal(badKey.status, 403);
+    const setup = await call("POST", "/api/admin/setup", { token: "test-setup", email: "Owner@Example.com", password: "a long admin password" });
+    assert.equal(setup.status, 201, JSON.stringify(setup.body));
+    admin = setup.body.token;
+    const me = await call("GET", "/api/admin/me", undefined, admin);
+    assert.equal(me.body.admin.email, "owner@example.com");
+
+    const again = await call("POST", "/api/admin/setup", { token: "test-setup", email: "x@example.com", password: "another long password" });
     assert.equal(again.status, 409);
+    assert.equal((await call("GET", "/api/admin/setup")).body.needed, false);
+    // Even straight into the database, a second account can't exist.
+    await assert.rejects(db.query(`insert into admin_users (email, name, role, password_hash) values ('second@example.com', 'X', 'admin', 'x')`));
+    assert.equal((await call("GET", "/api/admin/team", undefined, admin)).status, 404);
+
+    const login = await call("POST", "/api/admin/login", { email: "owner@example.com", password: "a long admin password" });
+    assert.equal(login.body.needsCode, false);
+    const wrong = await call("POST", "/api/admin/login", { email: "owner@example.com", password: "nope" });
+    assert.equal(wrong.status, 401);
+  });
+
+  it("lets the owner add an authenticator, and recover with the setup key", async () => {
+    const start = await call("POST", "/api/admin/security/totp/start", {}, admin);
+    const code = () => totpAt(start.body.secret, Math.floor(Date.now() / 30_000));
+    const on = await call("POST", "/api/admin/security/totp/confirm", { code: code() }, admin);
+    assert.equal(on.body.totpEnabled, true);
+    const step1 = await call("POST", "/api/admin/login", { email: "owner@example.com", password: "a long admin password" });
+    assert.equal(step1.body.needsCode, true);
+    assert.equal((await call("GET", "/api/admin/overview", undefined, step1.body.token)).status, 401);
+    const step2 = await call("POST", "/api/admin/totp", { code: code() }, step1.body.token);
+    assert.equal(step2.status, 200);
+
+    const rec = await call("POST", "/api/admin/recover", { token: "test-setup", password: "a brand new password" });
+    assert.equal(rec.status, 200);
+    assert.equal((await call("GET", "/api/admin/overview", undefined, admin)).status, 401); // old sessions end
+    admin = rec.body.token;
+    const after = await call("POST", "/api/admin/login", { email: "owner@example.com", password: "a brand new password" });
+    assert.equal(after.body.needsCode, false); // recovery removes the authenticator
+    admin = after.body.token;
+  });
+
+  it("approves a listing from the control centre", async () => {
 
     const draft = await call("POST", "/api/listings", { type: "STAY", title: "Quiet flat in Kileleshwa", city: "Nairobi", neighbourhood: "Kileleshwa", priceKes: 5000, bedrooms: 1, maxGuests: 2 }, ben);
     assert.equal(draft.status, 201, JSON.stringify(draft.body));
@@ -233,6 +268,42 @@ describe("Konnect", () => {
 
     const clear = await call("PUT", `/api/listings/${benListing}/occupancy`, { status: "available" }, ben);
     assert.equal(clear.body.listing.availability.status, "available");
+  });
+
+  it("controls the site: switches, edits and announcements", async () => {
+    // Sign-ups and bookings off.
+    await call("PUT", "/api/admin/settings", { signups_open: false, bookings_open: false, site_banner: "Back at 6pm" }, admin);
+    await wait(10_050); // the settings cache
+    const site = await call("GET", "/api/site");
+    assert.equal(site.body.banner, "Back at 6pm");
+    assert.equal(site.body.signupsOpen, false);
+    const s = await call("POST", "/api/auth/signup", { fullName: "Late Comer", email: "late@example.com", phone: "0712000099", password: "correct horse battery", dateOfBirth: "1990-01-01", gender: "man" });
+    assert.equal(s.status, 403);
+    assert.equal(s.body.error.code, "signups_closed");
+    const b = await call("POST", "/api/bookings", { listingId: benListing, checkIn: addDays(todayEAT(), 20), checkOut: addDays(todayEAT(), 21) }, ann);
+    assert.equal(b.body.error.code, "bookings_closed");
+    await call("PUT", "/api/admin/settings", { signups_open: true, bookings_open: true, site_banner: "" }, admin);
+
+    // Edit a user and a listing.
+    const users = await call("GET", "/api/admin/users?kind=hosts", undefined, admin);
+    const benRow = users.body.items.find((u: { email: string }) => u.email === "member2@example.com");
+    assert.ok(benRow);
+    const edit = await call("PATCH", `/api/admin/users/${benRow.id}`, { payoutPhone: "0744000444", fullName: "Benson Test" }, admin);
+    assert.equal(edit.status, 200);
+    const me = await call("GET", "/api/users/me", undefined, ben);
+    assert.equal(me.body.user.payoutPhone, "+254744000444");
+    const lp = await call("PATCH", `/api/admin/listings/${benListing}`, { priceKes: 5500 }, admin);
+    assert.equal(lp.status, 200);
+    assert.equal((await call("GET", `/api/listings/${benListing}`)).body.listing.priceKes, 5500);
+
+    // A message to all hosts lands in their notifications.
+    const ann1 = await call("POST", "/api/admin/announcements", { audience: "hosts", title: "New payout times", body: "Payouts now go out instantly." }, admin);
+    assert.equal(ann1.status, 201);
+    assert.equal(ann1.body.recipients, 1);
+    const notes = await call("GET", "/api/notifications", undefined, ben);
+    assert.ok(notes.body.items.some((n: { title: string }) => n.title === "New payout times"));
+    const annNotes = await call("GET", "/api/notifications", undefined, ann);
+    assert.ok(!annNotes.body.items.some((n: { title: string }) => n.title === "New payout times"));
   });
 
   it("runs the minute jobs without error", async () => {

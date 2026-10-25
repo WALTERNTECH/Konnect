@@ -6,6 +6,7 @@ import { ConnectProfileEditor } from "../components/ConnectProfileEditor";
 import { Avatar, BackLink, Button, Empty, LinkButton, Menu, Modal, PageHead, Skeleton, Verified } from "../components/ui";
 import { onLive, useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ui";
+import { useSite } from "../lib/site";
 import { activeLabel, GENDER, INTENT, ROLE } from "../lib/format";
 import type { ConnectCard, ConnectProfile } from "../types";
 import { ReportModal } from "./ListingDetail";
@@ -243,6 +244,7 @@ function SwipeDeck({ filters }: { filters: Filters }) {
 
 export default function Connect() {
   const { me, ready } = useAuth();
+  const site = useSite();
   const [tab, setTab] = useState<"discover" | "swipe" | "likes">("discover");
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -252,6 +254,12 @@ export default function Connect() {
   useEffect(() => onLive("match", () => void invalidate("/connect")), []);
 
   if (!ready) return null;
+  if (!site.connectOpen)
+    return (
+      <div className="page">
+        <Empty icon={<HeartHandshake />} title="Connect is closed for now">Matches and messages are paused. Stays and wellness are open as usual.</Empty>
+      </div>
+    );
   if (!me) return <SignedOut />;
 
   if (!me.hasConnectProfile || setup)

@@ -22,6 +22,7 @@ import { api, useApi } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { useTheme, type ThemePref } from "../context/ui";
 import { ago } from "../lib/format";
+import { useSite } from "../lib/site";
 import type { Notification } from "../types";
 import { Logo } from "./brand/Logo";
 import { Avatar, Menu, Spinner } from "./ui";
@@ -162,6 +163,7 @@ function AccountMenu() {
 
 export function TopBar({ overHero }: { overHero?: boolean }) {
   const { me, ready } = useAuth();
+  const site = useSite();
   const scrolled = useScrolled();
   const loc = useLocation();
   const next = encodeURIComponent(loc.pathname + loc.search);
@@ -175,9 +177,11 @@ export function TopBar({ overHero }: { overHero?: boolean }) {
           <NavLink to="/stays" className={({ isActive }) => (isActive ? "active" : "")}>
             Stays
           </NavLink>
-          <NavLink to="/wellness" className={({ isActive }) => (isActive ? "active" : "")}>
-            Wellness
-          </NavLink>
+          {site.wellnessOpen && (
+            <NavLink to="/wellness" className={({ isActive }) => (isActive ? "active" : "")}>
+              Wellness
+            </NavLink>
+          )}
           <NavLink to="/connect" className={({ isActive }) => (isActive ? "active" : "")}>
             Connect
           </NavLink>
@@ -216,15 +220,18 @@ export function TopBar({ overHero }: { overHero?: boolean }) {
 
 function BottomNav() {
   const { me } = useAuth();
+  const site = useSite();
   const cls = ({ isActive }: { isActive: boolean }) => (isActive ? "active" : "");
   return (
-    <nav className="bottomnav" aria-label="Main">
+    <nav className="bottomnav" aria-label="Main" style={{ gridTemplateColumns: `repeat(${site.wellnessOpen ? 5 : 4}, 1fr)` }}>
       <NavLink to="/" end className={cls}>
         <Compass /> Explore
       </NavLink>
-      <NavLink to="/wellness" className={cls}>
-        <Flower2 /> Wellness
-      </NavLink>
+      {site.wellnessOpen && (
+        <NavLink to="/wellness" className={cls}>
+          <Flower2 /> Wellness
+        </NavLink>
+      )}
       <NavLink to="/connect" className={cls}>
         <HeartHandshake /> Connect
         {me && me.unread.messages > 0 && <span className="dot" />}
@@ -286,8 +293,10 @@ export function AppLayout() {
   useEffect(() => {
     window.scrollTo({ top: 0 });
   }, [loc.pathname]);
+  const site = useSite();
   return (
     <>
+      {site.banner && <div className="site-banner" role="status">{site.banner}</div>}
       <TopBar overHero={overHero} />
       <main className="app-main">
         <div key={loc.pathname} className="route">
